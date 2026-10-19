@@ -42,6 +42,27 @@ test('the progress line and the rail read where the walk stands off the stored s
   }
 });
 
+test('every font the pages name is served from here as woff2 and kept for a year; nothing asks a third party; the stylesheet is not kept', async () => {
+  const { app } = appWith((async () => ({})) as Api);
+  const html = await (await app.request('/')).text();
+  const cssRes = await app.request('/public/style.css');
+  const css = await cssRes.text();
+  assert.equal(cssRes.headers.get('cache-control'), null, 'unversioned files keep the default revalidation');
+  assert.ok(!/fonts\.googleapis|fonts\.gstatic/.test(html + css), 'the hosted copy must not send visitors to Google');
+  const urls = new Set([
+    ...[...html.matchAll(/<link rel="preload" href="([^"]+)" as="font"/g)].map(m => m[1]),
+    ...[...css.matchAll(/url\("(fonts\/[^"]+\.woff2)"\)/g)].map(m => `/public/${m[1]}`),
+  ]);
+  assert.equal(urls.size, 3, [...urls].join(', '));
+  for (const url of urls) {
+    const res = await app.request(url);
+    assert.equal(res.status, 200, url);
+    assert.equal(res.headers.get('content-type'), 'font/woff2', url);
+    assert.match(res.headers.get('cache-control') ?? '', /max-age=31536000/, url);
+    assert.equal(new TextDecoder().decode(new Uint8Array(await res.arrayBuffer()).slice(0, 4)), 'wOF2', url);
+  }
+});
+
 test('POST /steps/key stores the account and shows the actions table; an error renders as the envelope', async () => {
   const api = (async (_m: string, path: string) => {
     if (path === '/me/session/') return { account: { id: 'a1', name: 'Acme', slug: 'acme', is_sandbox: true, kind: 'company' }, is_owner: true, user_email: 'dev@acme.test' };

@@ -113,6 +113,14 @@ export function createApp(deps: Deps): Hono {
     }
   }
 
+  // The fonts carry their version in the file name, so a browser may keep
+  // them for a year: every button press is a full page load. The stylesheet
+  // and the scripts are not versioned and keep the default revalidation.
+  // (Set around serveStatic: its onFound hook runs after the response exists.)
+  app.use('/public/fonts/*', async (c, next) => {
+    await next();
+    if (c.res.status === 200) c.header('Cache-Control', 'public, max-age=31536000, immutable');
+  });
   app.use('/public/*', serveStatic({ root: './' }));
 
   // Every route that writes to Abillio runs only against a sandbox account.

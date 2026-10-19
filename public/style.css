@@ -1,6 +1,55 @@
-/* One stylesheet for both pages: no framework, no build step. Tokens first,
-   then the base, the interactive states, the layout, the components and the
-   feedback (errors, empty states). */
+/* One stylesheet for both pages: no framework, no build step. Fonts and
+   tokens first, then the base, the interactive states, the layout, the
+   components, the feedback (errors, empty states) and the breakpoints. */
+
+/* ---- Fonts -------------------------------------------------------------- */
+/* Self-hosted in public/fonts under the SIL Open Font License (each licence
+   beside its file), so the page asks no third party for anything. One
+   variable file per family; the version is in the file name, which lets the
+   server tell browsers to keep it (server.ts). */
+@font-face {
+  font-family: "Outfit";
+  src: url("fonts/outfit-v1.100.woff2") format("woff2");
+  font-weight: 100 900;
+  font-style: normal;
+  font-display: swap;
+}
+@font-face {
+  font-family: "Source Sans 3";
+  src: url("fonts/source-sans-3-v3.052.woff2") format("woff2");
+  font-weight: 200 900;
+  font-style: normal;
+  font-display: swap;
+}
+@font-face {
+  font-family: "JetBrains Mono";
+  src: url("fonts/jetbrains-mono-v2.304.woff2") format("woff2");
+  font-weight: 100 800;
+  font-style: normal;
+  font-display: swap;
+}
+/* Until a face arrives, Arial (or a metric twin) stands in, scaled to the
+   face: size-adjust is the ratio of the two faces' widths over this page's
+   own copy (its paragraphs in Source Sans 3 at 400, its headings in Outfit at
+   600, set in each), and the overrides are the face's hhea ascent and descent
+   divided by it. With the measure in rem (not ch, which would follow the
+   fallback's wider "0"), the swap neither re-wraps a line nor moves the rail. */
+@font-face {
+  font-family: "Source Sans 3 Fallback";
+  src: local("Arial"), local("ArialMT"), local("Liberation Sans"), local("Arimo");
+  size-adjust: 92.78%;
+  ascent-override: 107.78%;
+  descent-override: 35.14%;
+  line-gap-override: 0%;
+}
+@font-face {
+  font-family: "Outfit Fallback";
+  src: local("Arial"), local("ArialMT"), local("Liberation Sans"), local("Arimo");
+  size-adjust: 99.38%;
+  ascent-override: 100.62%;
+  descent-override: 26.16%;
+  line-gap-override: 0%;
+}
 
 /* ---- Tokens ------------------------------------------------------------- */
 :root {
@@ -20,24 +69,36 @@
   --line-strong: #d3cbbe;
   --field-line: #958b7d;          /* form-field borders: 3:1 on a surface */
   --accent: #0f766e;
-  --accent-hover: #0b625b;
-  --accent-ink: #0c625b;          /* the accent as text, on any surface */
+  --accent-ink: #0c625b;          /* one step darker: the accent as text on any surface, and the hovered fill */
   --accent-tint: #ddeee9;
   --on-accent: #ffffff;
   --danger: #9f301b;
   --danger-tint: #f8e8e2;
   --danger-line: #e9c3b8;
   --neutral-tint: #e9e3d9;
+  --field: #fffefc;
+  --scrollbar: #c4baab;
+
+  /* Translucent layers: the paper's own brown and the accent, as channels. */
+  --shade: 74 56 30;
+  --accent-rgb: 15 118 110;
+  --chip: rgb(var(--shade) / 0.06);
+  --hover-tint: rgb(var(--shade) / 0.05);
+  --hairline: rgb(var(--shade) / 0.12);
+  --hairline-soft: rgb(var(--shade) / 0.07);
+  --dashed: rgb(var(--shade) / 0.24);
 
   /* Shadows carry the paper's hue and one light source, from above. */
-  --shadow-card: 0 1px 2px rgb(74 56 30 / 0.06), 0 6px 16px -10px rgb(74 56 30 / 0.18);
-  --shadow-lift: 0 0 0 1px rgb(15 118 110 / 0.30), 0 12px 28px -16px rgb(15 118 110 / 0.45);
-  --ring: 0 0 0 3px rgb(15 118 110 / 0.22);
+  --shadow-card: 0 1px 2px rgb(var(--shade) / 0.06), 0 6px 16px -10px rgb(var(--shade) / 0.18);
+  --shadow-button: 0 1px 2px rgb(var(--shade) / 0.12);
+  --shadow-lift: 0 0 0 1px rgb(var(--accent-rgb) / 0.3), 0 12px 28px -16px rgb(var(--accent-rgb) / 0.45);
+  --ring: 0 0 0 3px rgb(var(--accent-rgb) / 0.22);
+  --danger-ring: 0 0 0 3px rgb(159 48 27 / 0.16);
 
   /* Type: Outfit for headings, Source Sans 3 for text, JetBrains Mono for
      code, ids, amounts and the trace. Each falls back to the system's own. */
-  --font-display: "Outfit", ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
-  --font-body: "Source Sans 3", ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  --font-display: "Outfit", "Outfit Fallback", ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+  --font-body: "Source Sans 3", "Source Sans 3 Fallback", ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
   --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
   --text-xs: 0.75rem;
   --text-sm: 0.875rem;
@@ -52,6 +113,9 @@
   --radius-lg: 16px;
 
   --page-max: 1280px;
+  /* A reading line: 65 characters of Source Sans 3 at 16px, in rem so it
+     holds while the fallback shows. */
+  --measure: 32.3rem;
   --gutter: 24px;
   --ease: 200ms cubic-bezier(0.2, 0, 0, 1);
 }
@@ -84,9 +148,12 @@ a {
 }
 a:hover { color: var(--ink); text-decoration-thickness: 2px; }
 
-::selection { background: rgb(15 118 110 / 0.18); }
+::selection { background: rgb(var(--accent-rgb) / 0.18); }
 
-.visually-hidden {
+/* Read, not shown: the back office's page heading, "(opens in a new tab)",
+   and an upcoming step's "Not yet" (its gray marker already shows it). */
+.visually-hidden,
+.is-upcoming .step-status {
   position: absolute !important;
   width: 1px; height: 1px;
   margin: -1px; padding: 0;
@@ -119,7 +186,7 @@ a:hover { color: var(--ink); text-decoration-thickness: 2px; }
    hover and pressed rules hold for every kind. */
 button {
   --btn-bg: var(--accent);
-  --btn-bg-hover: var(--accent-hover);
+  --btn-bg-hover: var(--accent-ink);
   --btn-fg: var(--on-accent);
   --btn-line: var(--accent);
   position: relative;
@@ -134,7 +201,7 @@ button {
   background: var(--btn-bg);
   border: 1px solid var(--btn-line);
   border-radius: var(--radius-sm);
-  box-shadow: 0 1px 2px rgb(74 56 30 / 0.12);
+  box-shadow: var(--shadow-button);
   cursor: pointer;
   transition: background-color var(--ease), border-color var(--ease), color var(--ease), box-shadow var(--ease), transform var(--ease);
 }
@@ -211,7 +278,7 @@ input, select, textarea {
   color: var(--ink);
   text-decoration: none;
 }
-.brand:hover { color: var(--ink); }
+.brand:hover .brand-role { color: var(--ink-2); }
 .brand-mark svg { display: block; width: 28px; height: 28px; }
 .brand-role { font-weight: 500; color: var(--muted); }
 
@@ -276,7 +343,7 @@ main.one-col { width: min(720px, 100% - 2 * var(--gutter)); }
 /* The rail the five steps hang on: a marker per step and a line between.
    minmax(0, 1fr): a step is never wider than the column, however long a JSON
    line inside it (that scrolls in its own block). */
-.rail { display: grid; grid-template-columns: minmax(0, 1fr); gap: 20px; margin: 0; padding: 0; list-style: none; }
+.rail { display: grid; grid-template-columns: minmax(0, 1fr); gap: 20px; margin: 0; padding: 0; list-style: "\200B"; }
 .step {
   position: relative;
   display: grid;
@@ -293,7 +360,7 @@ main.one-col { width: min(720px, 100% - 2 * var(--gutter)); }
   background: var(--line-strong);
   border-radius: 1px;
 }
-.step.is-done:not(:last-child)::before { background: rgb(15 118 110 / 0.45); }
+.step.is-done:not(:last-child)::before { background: rgb(var(--accent-rgb) / 0.45); }
 .step-marker {
   position: relative;
   z-index: 1;
@@ -330,7 +397,7 @@ main.one-col { width: min(720px, 100% - 2 * var(--gutter)); }
   padding: 20px 22px 24px;
   background: var(--console);
   border-radius: var(--radius-lg);
-  box-shadow: inset 0 0 0 1px rgb(74 56 30 / 0.07);
+  box-shadow: inset 0 0 0 1px var(--hairline-soft);
 }
 .two-col > .console {
   position: sticky;
@@ -340,42 +407,13 @@ main.one-col { width: min(720px, 100% - 2 * var(--gutter)); }
   overflow: auto;
   overscroll-behavior: contain;
   scrollbar-width: thin;
-  scrollbar-color: #c4baab transparent;
-}
-
-/* Under 1200px the progress line takes its own row in the top bar. */
-@media (max-width: 1199.98px) {
-  .brand { margin-right: auto; }
-  .walk { order: 3; width: 100%; margin-right: 0; padding-top: 10px; border-top: 1px solid var(--line); }
-}
-
-/* Under 1024px: one column, the console after the steps. */
-@media (max-width: 1023.98px) {
-  .two-col,
-  .join { grid-template-columns: minmax(0, 1fr); }
-  .two-col > .console { position: static; max-height: none; overflow: visible; }
-}
-
-/* Phones: the marker moves into its card's corner and the line goes, so the
-   card (and the key table) keeps the full width. */
-@media (max-width: 639.98px) {
-  :root { --gutter: 16px; }
-  main { padding-top: 20px; }
-  .topbar { gap: 8px 16px; padding-block: 10px; }
-  .topnav a { padding: 4px 8px; font-size: var(--text-sm); }
-  .rail { gap: 16px; }
-  .step { display: block; }
-  .step:not(:last-child)::before { display: none; }
-  .step-marker { position: absolute; top: 16px; left: 16px; width: 28px; height: 28px; margin: 0; }
-  .panel { padding: 16px; }
-  .step .step-head { min-height: 28px; padding-left: 40px; }
-  .console { padding: 16px; }
+  scrollbar-color: var(--scrollbar) transparent;
 }
 
 /* ---- Components --------------------------------------------------------- */
 /* A step's card: the head carries the title and the status in words. */
 .panel > :last-child { margin-bottom: 0; }
-.panel p { max-width: 65ch; margin: 12px 0; }
+.panel p { max-width: var(--measure); margin: 12px 0; }
 .step-head {
   display: flex;
   flex-wrap: wrap;
@@ -394,14 +432,6 @@ main.one-col { width: min(720px, 100% - 2 * var(--gutter)); }
 }
 .is-done .step-status { color: var(--accent-ink); background: var(--accent-tint); }
 .is-current .step-status { color: var(--on-accent); background: var(--accent); }
-/* "Not yet" is for screen readers: the gray marker already says it. */
-.is-upcoming .step-status {
-  position: absolute;
-  width: 1px; height: 1px;
-  overflow: hidden;
-  clip-path: inset(50%);
-  white-space: nowrap;
-}
 
 .muted { color: var(--muted); }
 .panel p.muted { font-size: 0.9375rem; }
@@ -410,7 +440,7 @@ main.one-col { width: min(720px, 100% - 2 * var(--gutter)); }
    sentence around them. (A record line is all values: no chips there.) */
 :where(.panel p:not(.facts), .console p, .lede) code {
   padding: 1px 3px;
-  background: rgb(74 56 30 / 0.06);
+  background: var(--chip);
   border-radius: var(--radius-xs);
   box-decoration-break: clone;
   -webkit-box-decoration-break: clone;
@@ -482,7 +512,7 @@ table.actions { width: 100%; margin-top: 16px; font-size: var(--text-sm); border
 .actions td code:not(.state) { font-size: 0.8125rem; }
 .actions small { margin-left: 4px; font-size: var(--text-xs); color: var(--muted); }
 .actions tbody tr { transition: background-color var(--ease); }
-.actions tbody tr:hover { background: rgb(74 56 30 / 0.035); }
+.actions tbody tr:hover { background: var(--hover-tint); }
 details.others { margin-top: 12px; }
 details.others > summary {
   display: inline-flex;
@@ -506,7 +536,7 @@ select {
   padding: 8px 12px;
   font: 400 var(--text-md)/1.3 var(--font-body);
   color: var(--ink);
-  background-color: #fffefc;
+  background-color: var(--field);
   border: 1px solid var(--field-line);
   border-radius: var(--radius-sm);
 }
@@ -514,8 +544,12 @@ input:hover:not(:disabled),
 select:hover:not(:disabled) { border-color: var(--ink-2); }
 input:focus-visible,
 select:focus-visible { border-color: var(--accent); outline-offset: 1px; box-shadow: var(--ring); }
+/* Once the user has been in a field, a value the form will refuse shows red. */
+input:user-invalid,
+input:user-invalid:hover { border-color: var(--danger); }
+input:user-invalid:focus-visible { outline-color: var(--danger); box-shadow: var(--danger-ring); }
 /* Amounts are numbers to compare, so they get the figures of the code font. */
-input[inputmode="decimal"] { font-family: var(--font-mono); font-size: 0.9375rem; }
+input.amount { font-family: var(--font-mono); font-size: 0.9375rem; }
 select {
   appearance: none;
   padding-right: 36px;
@@ -547,14 +581,14 @@ select:disabled { color: var(--muted); background-color: var(--sunken); border-c
 
 /* The console: what went over the wire and what we keep. */
 .console h2 { margin: 0 0 8px; font-size: 1.0625rem; letter-spacing: -0.01em; }
-.console p.muted { max-width: 65ch; margin: 0 0 14px; font-size: var(--text-sm); }
+.console p.muted { max-width: var(--measure); margin: 0 0 14px; font-size: var(--text-sm); }
 .console-section + .console-section {
   margin-top: 28px;
   padding-top: 24px;
-  border-top: 1px solid rgb(74 56 30 / 0.12);
+  border-top: 1px solid var(--hairline);
 }
 
-details.trace { border-top: 1px solid rgb(74 56 30 / 0.12); }
+details.trace { border-top: 1px solid var(--hairline); }
 details.trace[open] { padding-bottom: 16px; }
 details.trace > summary {
   display: grid;
@@ -565,7 +599,7 @@ details.trace > summary {
   border-radius: var(--radius-sm);
   transition: background-color var(--ease);
 }
-details.trace > summary:hover { background: rgb(74 56 30 / 0.05); }
+details.trace > summary:hover { background: var(--hover-tint); }
 details.trace > summary::before { grid-row: 1 / span 2; margin-top: 6px; }
 .trace-call { font-size: var(--text-sm); }
 .trace-call code { font-size: 0.8125rem; color: var(--ink); }
@@ -597,7 +631,7 @@ p.error { margin: 10px 0 0; font-size: var(--text-sm); color: var(--danger); }
   line-height: 1.6;
   color: var(--ink);
   background: var(--well);
-  border: 1px solid rgb(74 56 30 / 0.1);
+  border: 1px solid var(--hairline);
   border-radius: var(--radius-md);
   tab-size: 2;
   scrollbar-width: thin;
@@ -605,7 +639,7 @@ p.error { margin: 10px 0 0; font-size: var(--text-sm); color: var(--danger); }
 .panel .json { background: var(--sunken); }
 
 /* Step 5: the events read as a log, newest first, one line each. */
-.events { container-type: inline-size; margin: 16px 0 0; padding: 0; list-style: none; border-top: 1px solid var(--line); }
+.events { container-type: inline-size; margin: 16px 0 0; padding: 0; list-style: "\200B"; border-top: 1px solid var(--line); }
 .events > li { border-bottom: 1px solid var(--line); }
 /* One log line: chevron, time, event, how it came. Where the list is narrow,
    the time and the tag share the first row and the event name gets the whole
@@ -620,7 +654,7 @@ p.error { margin: 10px 0 0; font-size: var(--text-sm); color: var(--danger); }
   border-radius: var(--radius-sm);
   transition: background-color var(--ease);
 }
-.events summary:hover { background: rgb(74 56 30 / 0.04); }
+.events summary:hover { background: var(--hover-tint); }
 .events .when { font: 0.75rem/1.5 var(--font-mono); color: var(--muted); font-variant-numeric: tabular-nums; }
 .events summary code { font-size: 0.8125rem; font-weight: 500; }
 .events details[open] { padding-bottom: 12px; }
@@ -636,11 +670,11 @@ p.error { margin: 10px 0 0; font-size: var(--text-sm); color: var(--danger); }
 /* The join page. */
 .join-card { padding: 32px; }
 .join-card h1 { margin: 4px 0 12px; font-size: var(--text-xl); line-height: 1.08; letter-spacing: -0.025em; }
-.lede { max-width: 60ch; margin: 0; font-size: 1.0625rem; color: var(--ink-2); }
+.lede { max-width: var(--measure); margin: 0; font-size: 1.0625rem; color: var(--ink-2); }
 .join-form { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 16px; margin-top: 28px; }
 .join-form .wide { grid-column: 1 / -1; }
 .join-form button { min-height: 48px; margin-top: 4px; font-size: var(--text-md); }
-#status ul { display: grid; gap: 6px; margin: 12px 0; padding: 0; list-style: none; }
+#status ul { display: grid; gap: 6px; margin: 12px 0; padding: 0; list-style: "\200B"; }
 #status li {
   display: flex;
   flex-wrap: wrap;
@@ -655,15 +689,6 @@ p.error { margin: 10px 0 0; font-size: var(--text-sm); color: var(--danger); }
 
 /* The popup's last page. */
 .one-col h1 { margin: 0 0 8px; font-size: 1.5rem; letter-spacing: -0.015em; }
-
-@media (max-width: 639.98px) {
-  .join-card { padding: 20px 16px; }
-  .fields,
-  .join-form { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
-  .fields .wide { grid-column: 1 / -1; }
-  .issue-form button,
-  .join-form button { width: 100%; }
-}
 
 /* ---- Feedback: errors, empty states, notes ------------------------------ */
 /* Abillio's refusal (or ours) above the steps, in its own words. */
@@ -687,13 +712,15 @@ p.error { margin: 10px 0 0; font-size: var(--text-sm); color: var(--danger); }
   background: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 20 20'%3E%3Ccircle cx='10' cy='10' r='8.25' fill='none' stroke='%239f301b' stroke-width='1.5'/%3E%3Cpath d='M10 5.75v5' stroke='%239f301b' stroke-width='1.75' stroke-linecap='round'/%3E%3Ccircle cx='10' cy='13.9' r='1.1' fill='%239f301b'/%3E%3C/svg%3E") center / 20px no-repeat;
 }
 .error-box > * { grid-column: 2; margin: 0; }
-.error-box > p { max-width: 70ch; }
+.error-box > p { max-width: var(--measure); }
 .error-box > * + * { margin-top: 10px; }
 .error-title { font-weight: 600; }
 .error-title b { font: 600 0.875rem/1.4 var(--font-mono); color: var(--danger); }
 .error-box > small { display: block; font: 0.75rem/1.5 var(--font-mono); color: var(--muted); }
-/* The blockers are a to-do list: each one is something to fix before retrying. */
-.blockers { display: grid; gap: 6px; padding: 0; list-style: none; }
+/* The blockers are a to-do list: each one is something to fix before retrying.
+   (A zero-width marker rather than none: Safari stops announcing a list whose
+   style is none, here and on the rail and the logs.) */
+.blockers { display: grid; gap: 6px; padding: 0; list-style: "\200B"; }
 .blockers li {
   position: relative;
   padding: 8px 12px 8px 36px;
@@ -726,8 +753,7 @@ p.error { margin: 10px 0 0; font-size: var(--text-sm); color: var(--danger); }
   padding: 14px 16px;
   font-size: var(--text-sm);
   color: var(--muted);
-  list-style: none;
-  border: 1px dashed rgb(74 56 30 / 0.24);
+  border: 1px dashed var(--dashed);
   border-radius: var(--radius-md);
 }
 .empty::before {
@@ -742,10 +768,11 @@ p.error { margin: 10px 0 0; font-size: var(--text-sm); color: var(--danger); }
   background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 20 20' fill='none' stroke='%23645d52' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M3.5 7h12M12.5 4l3 3-3 3M16.5 13h-12M7.5 10l-3 3 3 3'/%3E%3C/svg%3E");
 }
 .events:has(> .empty) { border-top: 0; }
-.events > li.empty { border-bottom: 1px dashed rgb(74 56 30 / 0.24); }
+.events > li.empty { border-bottom: 1px dashed var(--dashed); }
 
-/* What the join page's script says about the popup. */
-p.note:empty { display: none; }
+/* What the join page's script says about the popup. Empty, it folds to
+   nothing but stays in the page, so its aria-live region is there to speak. */
+p.note:empty { margin: 0; padding: 0; }
 p.note {
   max-width: none;
   margin: 16px 0 0;
@@ -765,7 +792,43 @@ p.note {
   box-shadow: inset 3px 0 0 var(--accent);
 }
 
+/* ---- Breakpoints -------------------------------------------------------- */
+/* Under 1200px the progress line takes its own row in the top bar. */
+@media (max-width: 1199.98px) {
+  .brand { margin-right: auto; }
+  .walk { order: 3; width: 100%; margin-right: 0; padding-top: 10px; border-top: 1px solid var(--line); }
+}
+
+/* Under 1024px: one column, the console after the steps. */
+@media (max-width: 1023.98px) {
+  .two-col,
+  .join { grid-template-columns: minmax(0, 1fr); }
+  .two-col > .console { position: static; max-height: none; overflow: visible; }
+}
+
+/* Above the rail the error lines up with the cards, not the markers. */
 @media (min-width: 640px) {
-  /* Above the rail the error lines up with the cards, not the markers. */
   .steps-col > .error-box { margin-left: 48px; }
+}
+
+/* Phones: the marker moves into its card's corner and the line goes, so the
+   card (and the key table) keeps the full width; forms take two columns. */
+@media (max-width: 639.98px) {
+  :root { --gutter: 16px; }
+  main { padding-top: 20px; }
+  .topbar { gap: 8px 16px; padding-block: 10px; }
+  .topnav a { padding: 4px 8px; font-size: var(--text-sm); }
+  .rail { gap: 16px; }
+  .step { display: block; }
+  .step:not(:last-child)::before { display: none; }
+  .step-marker { position: absolute; top: 16px; left: 16px; width: 28px; height: 28px; margin: 0; }
+  .panel { padding: 16px; }
+  .step .step-head { min-height: 28px; padding-left: 40px; }
+  .console { padding: 16px; }
+  .join-card { padding: 20px 16px; }
+  .fields,
+  .join-form { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
+  .fields .wide { grid-column: 1 / -1; }
+  .issue-form button,
+  .join-form button { width: 100%; }
 }

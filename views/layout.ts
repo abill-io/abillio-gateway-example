@@ -10,9 +10,10 @@ const MARK = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32"><rect 
 const FAVICON = `data:image/svg+xml,${encodeURIComponent(MARK)}`;
 const EXTERNAL = '<svg class="icon" viewBox="0 0 16 16" aria-hidden="true"><path d="M6 3.5h6.5V10M12.5 3.5 4 12" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>';
 
-// All three families in one stylesheet request. `display=swap` shows the text
-// in the system fallbacks style.css names until the fonts arrive.
-const FONTS = 'https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600&family=Outfit:wght@500;600&family=Source+Sans+3:wght@400;600;700&display=swap';
+// Preloaded, so all three faces arrive with the stylesheet that declares them
+// (style.css). A face that comes late re-sets its text, and a code chip that
+// ends right at a line's edge can then push a word onto the next line.
+const FONT_FILES = ['source-sans-3-v3.052.woff2', 'outfit-v1.100.woff2', 'jetbrains-mono-v2.304.woff2'];
 
 export type PageOptions = {
   // Which of the sample's two pages this is; the top bar marks it.
@@ -42,15 +43,13 @@ export function page(title: string, body: string, opts: PageOptions = {}): strin
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>${esc(title)} — Abillio gateway example</title>
 <link rel="icon" href="${esc(FAVICON)}">
-<link rel="preconnect" href="https://fonts.googleapis.com">
-<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link rel="stylesheet" href="${esc(FONTS)}">
+${FONT_FILES.map(f => `<link rel="preload" href="/public/fonts/${esc(f)}" as="font" type="font/woff2" crossorigin>`).join('\n')}
 <link rel="stylesheet" href="/public/style.css">
 </head>
 <body>
 <a class="skip-link" href="#main">Skip to content</a>
 <header class="topbar">
-  <a class="brand" href="/"${here('office')}><span class="brand-mark" aria-hidden="true">${MARK}</span><span class="brand-name">Brightline Tutors</span> <span class="brand-role">— back office</span></a>
+  <a class="brand" href="/"${here('office')}><span class="brand-mark" aria-hidden="true">${MARK}</span>Brightline Tutors <span class="brand-role">— back office</span></a>
   ${opts.steps ? progressLine(opts.steps, opts.controls ?? '') : ''}
   <nav class="topnav" aria-label="Pages">
     <a href="/join"${here('join')}>The freelancer's page</a>

@@ -84,10 +84,10 @@ through a temporary file and a rename, so a crash mid-write leaves the previous
 version intact. `lib/webhooks.ts` verifies and deduplicates deliveries. `views/`
 renders the two pages: the five steps on a numbered rail, with the progress line
 in the top bar read off the stored state, and the trace in a console beside
-them. `public/` holds the popup script, the page script and the stylesheet, plain
-CSS with no build. The one thing the pages load from elsewhere is three fonts
-from Google Fonts (the font links in `views/layout.ts`); without them the
-system fonts take over.
+them. `public/` holds the popup script, the page script, the stylesheet (plain
+CSS, no build) and the three fonts, Outfit, Source Sans 3 and JetBrains Mono,
+self-hosted under the SIL Open Font License with each licence beside its file in
+`public/fonts/`: the pages load nothing from anywhere else.
 
 The right-hand column of the back office, **What we sent to Abillio**, is the
 trace of the last fifty calls, newest first: method, path, request body, status
