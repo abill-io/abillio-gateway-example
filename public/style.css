@@ -1,0 +1,132 @@
+/* One plain stylesheet for both pages: no framework, no build step. */
+:root {
+  --text: #1d1f23;
+  --muted: #6b7280;
+  --line: #d9dce1;
+  --surface: #ffffff;
+  --page: #f5f6f8;
+  --accent: #2456d6;
+  --accent-tint: #e8eefc;
+  --red: #b42318;
+  --red-line: #f1b9b3;
+  --red-tint: #fdeceb;
+  --green: #15803d;
+  --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  font: 15px/1.5 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  color: var(--text);
+  background: var(--page);
+}
+
+a { color: var(--accent); }
+
+header.top {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.25rem 1.5rem;
+  padding: 0.75rem 1.5rem;
+  background: var(--surface);
+  border-bottom: 1px solid var(--line);
+}
+header.top a { text-decoration: none; }
+header.top a:first-child { margin-right: auto; font-weight: 600; color: var(--text); }
+
+main { max-width: 1400px; margin: 0 auto; padding: 1.5rem; }
+
+.two-col {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 1.5rem;
+  align-items: start;
+}
+/* A grid item is as wide as its content by default; without this a long
+   JSON line would widen its column instead of scrolling inside its block. */
+.two-col > * { min-width: 0; }
+
+@media (max-width: 900px) {
+  .two-col { grid-template-columns: 1fr; }
+  main { padding: 1rem; }
+}
+
+.panel {
+  margin-bottom: 1.5rem;
+  padding: 1rem 1.25rem;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+}
+.panel h2 { margin: 0 0 0.5rem; font-size: 1.1rem; }
+
+h4 { margin: 0.75rem 0 0.25rem; font-size: 0.85rem; }
+
+.muted { color: var(--muted); }
+
+code, pre { font-family: var(--mono); font-size: 0.875em; }
+
+.json {
+  max-height: 24rem;
+  margin: 0.5rem 0 0;
+  padding: 0.75rem;
+  overflow: auto;
+  background: var(--page);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+}
+
+button {
+  padding: 0.4rem 1rem;
+  font: inherit;
+  color: #fff;
+  background: var(--accent);
+  border: 1px solid var(--accent);
+  border-radius: 6px;
+  cursor: pointer;
+}
+/* app.js disables a form's buttons on submit, so a second click shows as ignored. */
+button:disabled { opacity: 0.5; cursor: progress; }
+
+.tag {
+  display: inline-block;
+  padding: 0 0.5rem;
+  font-size: 0.75rem;
+  font-weight: 600;
+  color: var(--accent);
+  background: var(--accent-tint);
+  border-radius: 999px;
+  vertical-align: middle;
+}
+
+table { width: 100%; margin-top: 0.75rem; border-collapse: collapse; }
+th, td { padding: 0.3rem 0.5rem; text-align: left; border-bottom: 1px solid var(--line); }
+/* Action ids are long unbroken words; on a phone they break instead of widening the page. */
+td { overflow-wrap: anywhere; }
+tr.needed { font-weight: 600; }
+tr.needed small { font-weight: 400; color: var(--muted); }
+.state-forbidden td:last-child,
+.state-unavailable td:last-child { color: var(--red); }
+.state-available td:last-child { color: var(--green); }
+
+.error-box {
+  margin-bottom: 1.5rem;
+  padding: 0.75rem 1rem;
+  color: var(--red);
+  background: var(--red-tint);
+  border: 1px solid var(--red-line);
+  border-radius: 8px;
+}
+.error-box p,
+.error-box ul { margin: 0.5rem 0; color: var(--text); }
+.error-box small { display: block; color: var(--muted); }
+/* The blockers are a to-do list: each one is something to fix before retrying. */
+.blockers { padding-left: 1.5rem; list-style: "☐  "; }
+
+details.trace { padding: 0.5rem 0; border-top: 1px solid var(--line); }
+details.trace summary { cursor: pointer; overflow-wrap: anywhere; }
+details.trace small { color: var(--muted); }
+details.trace.is-error summary b { color: var(--red); }
+p.error { margin: 0.5rem 0 0; color: var(--red); }
