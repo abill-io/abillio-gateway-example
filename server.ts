@@ -11,6 +11,7 @@ import { forgetIdempotencyKey, loadState, updateState, type State } from './lib/
 import { Trace, trace as processTrace } from './lib/trace.ts';
 import { checkKey, type KeyReport } from './steps/01-key.ts';
 import { findEngagement, readSession, returnUrlFor, startOnboarding } from './steps/02-onboard.ts';
+import { draftInvoice, findSelfClient, issueInvoice } from './steps/03-issue.ts';
 import { companyPage } from './views/company.ts';
 import { joinPage } from './views/join.ts';
 import { page } from './views/layout.ts';
@@ -106,6 +107,47 @@ export function createApp(deps: Deps): Hono {
       return c.json({ ...status, engagement_id: engagementId });
     } catch (err) {
       return c.text(err instanceof AbillioError ? `${err.code}: ${err.message}` : String(err), 502);
+    }
+  });
+
+  app.post('/steps/issue', async c => {
+    const form = Object.fromEntries((await c.req.formData()).entries()) as Record<string, string>;
+    const state = deps.state.load();
+    const engagementId = state.freelancer?.engagement_id;
+    if (!engagementId || !state.account) return render(c, new Error('Join a freelancer first (step 2) and check the key (step 1).'));
+    // The stored draft this press issues. A local, not `state.invoice`: the
+    // store hands out copies, so a draft this press writes never shows up in
+    // the copy it loaded, and the catch below must still know it exists.
+    let draftId = state.invoice?.status === 'draft' ? state.invoice.id : null;
+    try {
+      const self = await findSelfClient(deps.api, state.account.id);
+      let invoice = state.invoice && state.invoice.status === 'draft'
+        ? { id: state.invoice.id, number: state.invoice.number, status: state.invoice.status, public_url: state.invoice.public_url, total: '', currency: '' }
+        : await draftInvoice(deps.api, state, engagementId, self.id, { description: form.description ?? '', unit_price: form.unit_price ?? '', currency_code: form.currency_code || 'EUR' });
+      // Only this route's keys are written back, never the whole map: another
+      // tab (or, on the hosted copy, another visitor) may have minted keys
+      // meanwhile.
+      deps.state.update(s => { s.invoice = { id: invoice.id, number: invoice.number, status: invoice.status, public_url: invoice.public_url }; s.idempotency[`draft:${engagementId}`] = state.idempotency[`draft:${engagementId}`]; });
+      draftId = invoice.id;
+      invoice = await issueInvoice(deps.api, state, engagementId, invoice.id);
+      deps.state.update(s => { s.invoice = { id: invoice.id, number: invoice.number, status: invoice.status, public_url: invoice.public_url }; s.idempotency[`issue:${invoice.id}`] = state.idempotency[`issue:${invoice.id}`]; });
+      return render(c);
+    } catch (err) {
+      // A verified failure (an enveloped 4xx) spends the key on Abillio's
+      // side: forget it so the next press is a new attempt. A network failure
+      // or a 5xx is an unknown outcome: the key is kept and persisted (it was
+      // minted only into the copy this press loaded), so a blind retry
+      // replays instead of issuing twice. The draft's key is forgotten only
+      // if no draft was written.
+      const action = draftId ? `issue:${draftId}` : `draft:${engagementId}`;
+      if (err instanceof AbillioError && err.status < 500) {
+        forgetIdempotencyKey(state, action);
+        deps.state.update(s => { delete s.idempotency[action]; });
+      } else {
+        const key = state.idempotency[action];
+        if (key) deps.state.update(s => { s.idempotency[action] = key; });
+      }
+      return render(c, err);
     }
   });
 

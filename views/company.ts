@@ -28,6 +28,22 @@ export function onboardingPanel(state: State): string {
   </section>`;
 }
 
+export function issuePanel(state: State): string {
+  const ready = Boolean(state.freelancer?.engagement_id && state.account);
+  const inv = state.invoice;
+  return `<section class="panel" id="step-3"><h2>Step 3 — Issue an invoice in the freelancer's name</h2>
+    <p><code>GET /accounts/clients/</code> finds the self-client (the company itself), <code>POST /engagements/{id}/invoices/</code> drafts, <code>POST …/issue</code> issues. A 409 here lists every blocker at once.</p>
+    <form method="post" action="/steps/issue" ${ready ? '' : 'class="disabled"'}>
+      <label>Description <input name="description" value="Tutoring, October" required></label>
+      <label>Amount <input name="unit_price" value="100.00" required pattern="\\d+(\\.\\d{1,2})?"></label>
+      <label>Currency <select name="currency_code"><option>EUR</option></select></label>
+      <button ${ready ? '' : 'disabled'}>Draft and issue</button>
+    </form>
+    ${ready ? '' : '<p class="muted">Needs a joined freelancer (step 2) and the key check (step 1).</p>'}
+    ${inv ? `<p>Invoice <b>${esc(inv.number || inv.id)}</b> — status <code>${esc(inv.status)}</code>, <a href="${esc(inv.public_url)}" target="_blank" rel="noopener">open the document</a>.</p>` : ''}
+  </section>`;
+}
+
 export function placeholderPanel(n: number, title: string): string {
   return `<section class="panel" id="step-${esc(n)}"><h2>Step ${esc(n)} — ${esc(title)}</h2><p class="muted">Coming in a later task.</p></section>`;
 }
@@ -38,7 +54,7 @@ export function companyPage(input: CompanyPageInput): string {
       ${errorBox(input.error)}
       ${keyPanel(input.key, input.state)}
       ${onboardingPanel(input.state)}
-      ${placeholderPanel(3, 'Issue')}
+      ${issuePanel(input.state)}
       ${placeholderPanel(4, 'Pay')}
       ${placeholderPanel(5, 'Events')}
       <section class="panel"><h2>What we store</h2><p class="muted"><code>data/state.json</code> — the fields a real integration keeps in its own database.</p>${jsonBlock(input.state)}</section>
