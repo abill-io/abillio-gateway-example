@@ -9,7 +9,7 @@ import { csrf } from 'hono/csrf';
 import { streamSSE } from 'hono/streaming';
 import { AbillioError, createApi, type Api } from './lib/abillio.ts';
 import { loadEnv } from './lib/env.ts';
-import { forgetIdempotencyKey, loadState, updateState, type State } from './lib/store.ts';
+import { forgetIdempotencyKey, loadState, updateState, type KeyedOptions, type State, type Store } from './lib/store.ts';
 import { Trace, trace as processTrace } from './lib/trace.ts';
 import { dedupeKey, parseDelivery, verifySignature } from './lib/webhooks.ts';
 import { checkKey, type KeyReport } from './steps/01-key.ts';
@@ -23,7 +23,7 @@ import { page } from './views/layout.ts';
 
 export type Deps = {
   api: Api;
-  state: { load: () => State; update: (fn: (s: State) => void) => State };
+  state: Store;
   trace: Trace;
   publicUrl: string | null;
   port: number;
@@ -55,9 +55,15 @@ export function createApp(deps: Deps): Hono {
   // the poller (both Task 9) end up here.
   const notifyStored = () => { deps.onStored(); for (const fn of refreshListeners) fn(); };
   // What a page or /api/state may show of the state: everything except the
-  // webhook signing secret. On the hosted copy every visitor sees this page,
-  // and the secret is what lets someone forge a delivery.
-  const publicState = (s: State): State => (s.webhook ? { ...s, webhook: { ...s.webhook, secret: '…' + s.webhook.secret.slice(-4) } } : s);
+  // webhook signing secret, connected or still pending. On the hosted copy
+  // every visitor sees this page, and the secret is what lets someone forge a
+  // delivery.
+  const mask = (secret: string) => '…' + secret.slice(-4);
+  const publicState = (s: State): State => ({
+    ...s,
+    webhook: s.webhook && { ...s.webhook, secret: mask(s.webhook.secret) },
+    webhook_request: s.webhook_request && { ...s.webhook_request, secret: mask(s.webhook_request.secret) },
+  });
 
   // `c.html` is typed `Response | Promise<Response>` (it also takes a
   // Promise<string>); a route handler returns either.
@@ -78,7 +84,7 @@ export function createApp(deps: Deps): Hono {
   // not a state (a sandbox simulation): after any settled answer, a success
   // too, its key is forgotten, so the next press plays it again; only an
   // unknown outcome keeps it, so a blind retry replays.
-  async function keyed<T>(state: State, action: string, call: () => Promise<T>, opts: { once?: boolean; onRefused?: (s: State) => void } = {}): Promise<T> {
+  async function keyed<T>(state: State, action: string, call: () => Promise<T>, opts: KeyedOptions = {}): Promise<T> {
     let claimed = '';
     deps.state.update(s => { claimed = state.idempotency[action] = s.idempotency[action] ??= randomUUID(); });
     const forget = (also: (s: State) => void = () => {}) => {
@@ -283,10 +289,15 @@ export function createApp(deps: Deps): Hono {
     // The test delivery has a constant body and no retries: every press is a
     // new one on purpose, so it is never deduped. Real events carry their
     // emission time inside the body, so distinct emissions never collide.
-    if (delivery.event_type === 'channel.test' || !state.events.some(e => e.dedupe_key === key)) {
-      deps.state.update(s => { s.events.push({ received_at: new Date(deps.now()).toISOString(), event_type: delivery.event_type, data: delivery.data, via: 'webhook', dedupe_key: key }); });
-      notifyStored();
-    }
+    // Decided inside the write, against what is stored by then: two copies
+    // that arrive together are stored once, and the page is told once.
+    let stored = false;
+    deps.state.update(s => {
+      if (delivery.event_type !== 'channel.test' && s.events.some(e => e.dedupe_key === key)) return;
+      s.events.push({ received_at: new Date(deps.now()).toISOString(), event_type: delivery.event_type, data: delivery.data, via: 'webhook', dedupe_key: key });
+      stored = true;
+    });
+    if (stored) notifyStored();
     return c.text('ok', 200);
   });
 
@@ -300,12 +311,14 @@ export function createApp(deps: Deps): Hono {
         const fresh = await pollForEvents(deps.api, state);
         if (fresh.length) {
           // Guarded: the poll's copy may be older than what a route stored
-          // meanwhile (a re-join, a new invoice), so it only updates the rows it
-          // polled and appends the events the store does not have yet.
+          // meanwhile (a re-join, a new invoice, a start over), so it only
+          // updates the rows it polled and appends only this poll's events,
+          // each once; anything else in its copy may be gone from the store
+          // on purpose.
           deps.state.update(s => {
             if (state.invoice && s.invoice?.id === state.invoice.id) s.invoice = state.invoice;
             if (state.payout && s.payout?.id === state.payout.id) s.payout = state.payout;
-            for (const e of state.events) if (!e.dedupe_key || !s.events.some(x => x.dedupe_key === e.dedupe_key)) s.events.push(e);
+            for (const e of fresh) if (!e.dedupe_key || !s.events.some(x => x.dedupe_key === e.dedupe_key)) s.events.push(e);
           });
           notifyStored();
         }
@@ -318,10 +331,9 @@ export function createApp(deps: Deps): Hono {
 
   app.post('/steps/events/connect', async c => {
     if (!deps.publicUrl) return render(c, new Error('Set PUBLIC_URL (npm run tunnel prints how) and restart to receive webhooks.'));
-    const state = deps.state.load();
+    // connectWebhooks stores each answer as it comes (step 5's file says why).
     try {
-      const webhook = await connectWebhooks(deps.api, keyed, state, deps.publicUrl);
-      deps.state.update(s => { s.webhook = webhook; });
+      await connectWebhooks(deps.api, keyed, deps.state, deps.publicUrl);
       return render(c);
     } catch (err) { return render(c, err); }
   });

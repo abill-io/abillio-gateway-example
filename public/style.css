@@ -130,3 +130,11 @@ details.trace summary { cursor: pointer; overflow-wrap: anywhere; }
 details.trace small { color: var(--muted); }
 details.trace.is-error summary b { color: var(--red); }
 p.error { margin: 0.5rem 0 0; color: var(--red); }
+
+/* Step 5: Reconnect and the test delivery share a line, and the events read as
+   a compact log, newest first, each payload capped lower than the trace's. */
+form.inline { display: inline-block; margin: 0 0.5rem 0.5rem 0; }
+ul.events { margin: 0.75rem 0 0; padding: 0; list-style: none; }
+ul.events > li { padding: 0.5rem 0; border-top: 1px solid var(--line); overflow-wrap: anywhere; }
+ul.events small { color: var(--muted); }
+ul.events .json { max-height: 12rem; }

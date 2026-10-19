@@ -98,7 +98,7 @@ export function eventsPanel(state: State, publicUrl: string | null): string {
     ${publicUrl
       ? `<p>Public URL <code>${esc(publicUrl)}</code>. <code>POST /accounts/notifications/channels/</code> + <code>POST /accounts/notifications/subscriptions/</code>; deliveries arrive at <code>/webhooks/abillio</code>, signed.</p>
          <form method="post" action="/steps/events/connect" class="inline"><button>${w ? 'Reconnect' : 'Connect webhooks'}</button></form>
-         ${w ? `<form method="post" action="/steps/events/test" class="inline"><button>Send a test delivery</button></form><p>Channel <code>${esc(w.channel_id)}</code>, subscription <code>${esc(w.subscription_id)}</code>.</p>` : ''}`
+         ${w ? `<form method="post" action="/steps/events/test" class="inline"><button>Send a test delivery</button></form><p>Channel <code>${esc(w.channel_id)}</code>, subscription <code>${esc(w.subscription_id ?? '(none yet: press Reconnect)')}</code>.</p>` : ''}`
       : `<p class="muted">No <code>PUBLIC_URL</code>: webhooks are off and the server polls every 5 s instead (<code>npm run tunnel</code> prints how to get a public URL).</p>`}
     <ul class="events">${rows || '<li class="muted">Nothing received yet.</li>'}</ul>
   </section>`;

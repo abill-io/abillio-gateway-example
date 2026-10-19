@@ -39,7 +39,13 @@ export type State = {
   invoice: { id: string; number: string; status: string; public_url: string } | null;
   invoice_request: InvoiceRequest | null;
   payout: { id: string; status: string } | null;
-  webhook: { channel_id: string; subscription_id: string; secret: string; url: string } | null;
+  // Stored as soon as Abillio answers the channel POST, before the
+  // subscription exists (subscription_id null until it does).
+  webhook: { channel_id: string; subscription_id: string | null; secret: string; url: string } | null;
+  // What the channel POST sends, decided once and stored before the first
+  // call, like `invoice_request`: a retry under a kept key re-sends exactly
+  // this. Cleared with the key on a refusal, and once the webhook is complete.
+  webhook_request: { url: string; secret: string } | null;
   idempotency: Record<string, string>;
   events: StoredEvent[];
 };
@@ -47,7 +53,7 @@ export type State = {
 const DEFAULT_FILE = process.env.STATE_FILE || join(process.cwd(), 'data', 'state.json');
 
 export function defaultState(): State {
-  return { account: null, freelancer: null, invoice: null, invoice_request: null, payout: null, webhook: null, idempotency: {}, events: [] };
+  return { account: null, freelancer: null, invoice: null, invoice_request: null, payout: null, webhook: null, webhook_request: null, idempotency: {}, events: [] };
 }
 
 export function loadState(file: string = DEFAULT_FILE): State {
@@ -84,10 +90,17 @@ export function idempotencyKeyFor(state: State, action: string): string {
   return minted;
 }
 
+// Where a route reads and writes the state: data/state.json in the app, an
+// object in the tests.
+export type Store = { load: () => State; update: (fn: (s: State) => void) => State };
+
 // The shape of createApp's keyed() helper (server.ts): a step that sends a
 // keyed call takes it, so the route alone decides when a key is claimed and
-// when it is forgotten.
-export type Keyed = <T>(state: State, action: string, call: () => Promise<T>) => Promise<T>;
+// when it is forgotten. `once` spends the key on any settled answer (an
+// action that is an event); `onRefused` clears what came with the key, in the
+// same write, when Abillio refuses in its envelope.
+export type KeyedOptions = { once?: boolean; onRefused?: (s: State) => void };
+export type Keyed = <T>(state: State, action: string, call: () => Promise<T>, opts?: KeyedOptions) => Promise<T>;
 
 // Abillio keeps the key of a call it answered with an error spent: a retry
 // with that key is a 409. Forgetting it makes the next press mint a new key,

@@ -1,13 +1,19 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { SUBSCRIBED_EVENTS, connectWebhooks, pollForEvents, sendTestDelivery } from '../steps/05-events.ts';
-import type { Api } from '../lib/abillio.ts';
-import { defaultState, idempotencyKeyFor, type Keyed } from '../lib/store.ts';
+import { AbillioError, type Api } from '../lib/abillio.ts';
+import { defaultState, idempotencyKeyFor, type Keyed, type State } from '../lib/store.ts';
 
 // The step tests check the calls and their keys; the claim-before-call and
 // forget-on-verified-failure behaviour of the real keyed() is server.ts's and
 // is covered there.
 const passThrough: Keyed = (state, action, call) => { idempotencyKeyFor(state, action); return call(); };
+
+// The store connectWebhooks writes as it goes; data/state.json in the app.
+function memoryStore(initial: State = defaultState()) {
+  let current = initial;
+  return { load: () => current, update: (fn: (s: State) => void) => { fn(current); return current; } };
+}
 
 test('the subscription lists every engagement event the guide names', () => {
   for (const e of ['engagement.onboarding.started', 'engagement.onboarding.completed', 'engagement.kyc.updated', 'engagement.requirements_updated', 'engagement.commission.accepted', 'engagement.commission.credited', 'engagement.commission.reversed', 'engagement.invoice.confirmed', 'engagement.invoice.status_changed', 'engagement.invoice.paid', 'engagement.payout.processing', 'engagement.payout.completed', 'engagement.payout.failed', 'bulk_invoice.completed']) {
@@ -25,17 +31,17 @@ test('connectWebhooks creates a channel with a 64-hex secret and a subscription;
     if (method === 'POST' && path === '/accounts/notifications/channels/ch1/test') return { success: true };
     throw new Error(path);
   }) as Api;
-  const state = defaultState();
-  const first = await connectWebhooks(api, passThrough, state, 'https://a.trycloudflare.com');
+  const store = memoryStore();
+  await connectWebhooks(api, passThrough, store, 'https://a.trycloudflare.com');
+  const first = store.load().webhook!;
   assert.match(first.secret, /^[0-9a-f]{64}$/);
   assert.equal(first.url, 'https://a.trycloudflare.com/webhooks/abillio');
   assert.equal(calls[0].body.kind, 'webhook');
   assert.equal(calls[0].body.secret, first.secret);
   assert.deepEqual(calls[1].body.channel_uuids, ['ch1']);
   assert.deepEqual(calls[1].body.event_types, SUBSCRIBED_EVENTS);
-  state.webhook = first;
-  const second = await connectWebhooks(api, passThrough, state, 'https://b.trycloudflare.com');
-  assert.equal(second.channel_id, 'ch1');
+  await connectWebhooks(api, passThrough, store, 'https://b.trycloudflare.com');
+  assert.equal(store.load().webhook?.channel_id, 'ch1');
   assert.equal(calls.at(-1)?.method, 'PATCH');
   assert.equal(calls.at(-1)?.body.destination, 'https://b.trycloudflare.com/webhooks/abillio');
   await sendTestDelivery(api, 'ch1');
@@ -57,4 +63,46 @@ test('pollForEvents reports what changed since the stored state, named like the 
   assert.ok(events.every(e => e.via === 'poll'));
   const again = await pollForEvents(api, state);
   assert.deepEqual(again, [], 'nothing changed since the first poll, so nothing is reported');
+});
+
+// A freelancer with an approved invoice and a pending payout; Abillio answers
+// that the session is complete and both were paid, unless `answers` says
+// otherwise for a path.
+function polled(answers: Record<string, () => unknown> = {}) {
+  const state = defaultState();
+  state.freelancer = { email: 'anna@example.com', session_id: 's1', session_url: 'https://new.abillio.dev/s/t', engagement_id: 'e1', servicing_company_slug: 'abillio-ks' };
+  state.invoice = { id: 'inv-1', number: 'A-1', status: 'approved', public_url: 'u' };
+  state.payout = { id: 'p1', status: 'pending' };
+  const reads: Record<string, () => unknown> = {
+    '/onboarding/sessions/s1': () => ({ state: 'complete', can_be_paid: true, purpose: 'onboarding', requirements: [] }),
+    '/accounts/invoices/inv-1/': () => ({ id: 'inv-1', status: 'paid' }),
+    '/engagements/e1/payouts/p1': () => ({ id: 'p1', status: 'paid' }),
+    ...answers,
+  };
+  const api = (async (_m: string, path: string) => {
+    const read = reads[path];
+    if (!read) throw new Error(path);
+    return read();
+  }) as Api;
+  return { state, api };
+}
+
+test('a read that fails is logged once and the poll still reports what the other two found', async t => {
+  const warn = t.mock.method(console, 'warn', () => {});
+  const all = ['engagement.onboarding.completed', 'engagement.invoice.paid', 'engagement.payout.completed'];
+  for (const [i, failing] of ['/onboarding/sessions/s1', '/accounts/invoices/inv-1/', '/engagements/e1/payouts/p1'].entries()) {
+    warn.mock.resetCalls();
+    const { state, api } = polled({ [failing]: () => { throw new AbillioError(405, { detail: 'Method not allowed' }, ''); } });
+    const events = await pollForEvents(api, state);
+    assert.deepEqual(events.map(e => e.event_type), all.filter((_, j) => j !== i), `${failing} failed`);
+    assert.equal(warn.mock.callCount(), 1, `${failing}: one warning`);
+  }
+});
+
+test("a payout status no webhook names is reported under the sample's own poll. name; the others under the webhook's", async () => {
+  for (const [status, name] of [['paid', 'engagement.payout.completed'], ['processing', 'engagement.payout.processing'], ['rejected', 'engagement.payout.failed'], ['approved', 'poll.payout.status_changed']]) {
+    const { state, api } = polled({ '/engagements/e1/payouts/p1': () => ({ id: 'p1', status }) });
+    const events = await pollForEvents(api, state);
+    assert.equal(events.at(-1)?.event_type, name, status);
+  }
 });

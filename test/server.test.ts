@@ -22,9 +22,9 @@ export function fileLikeState(initial: State = defaultState()) {
   };
 }
 
-export function appWith(api: Api, state = memoryState(), publicUrl: string | null = null, onStored: () => void = () => {}, now: () => number = Date.now) {
+export function appWith(api: Api, state = memoryState(), publicUrl: string | null = null, onStored: () => void = () => {}, now: () => number = Date.now, pollIntervalMs: number | null = null) {
   const trace = new Trace();
-  const app = createApp({ api, state, trace, publicUrl, port: 4000, abillioOrigin: () => 'https://new.abillio.dev', onStored, now, pollIntervalMs: null });
+  const app = createApp({ api, state, trace, publicUrl, port: 4000, abillioOrigin: () => 'https://new.abillio.dev', onStored, now, pollIntervalMs });
   return { app, trace, state };
 }
 
@@ -58,12 +58,14 @@ test('GET /api/state returns the stored state as JSON, without the webhook secre
   assert.deepEqual(await res.json(), defaultState());
   const withSecret = defaultState();
   withSecret.webhook = { channel_id: 'ch1', subscription_id: 'sub1', secret: 'a'.repeat(60) + 'beef', url: 'https://x/webhooks/abillio' };
+  withSecret.webhook_request = { url: 'https://x/webhooks/abillio', secret: 'c'.repeat(60) + 'f00d' };
   const { app: app2 } = appWith((async () => ({})) as Api, memoryState(withSecret));
   const body = await (await app2.request('/api/state')).text();
   assert.ok(!body.includes('a'.repeat(60)), 'the secret never leaves the server');
-  assert.ok(body.includes('beef'), 'its last four characters identify it');
+  assert.ok(!body.includes('c'.repeat(60)), "nor does a pending channel request's");
+  assert.ok(body.includes('beef') && body.includes('f00d'), 'their last four characters identify them');
   const html = await (await app2.request('/')).text();
-  assert.ok(!html.includes('a'.repeat(60)));
+  assert.ok(!html.includes('a'.repeat(60)) && !html.includes('c'.repeat(60)));
 });
 
 test('the join page opens the popup from the session url and polls the status', async () => {
@@ -525,4 +527,135 @@ test('a form POST from another origin is refused, a webhook delivery is not', as
   assert.equal(foreign.status, 403);
   const own = await app.request('http://localhost:4000/steps/key', { method: 'POST', headers: { origin: 'http://localhost:4000', 'content-type': 'application/x-www-form-urlencoded' }, body: '' });
   assert.notEqual(own.status, 403);
+});
+
+test('two copies of a delivery that arrive together are stored once, and the page is told once', async () => {
+  const v = JSON.parse(readFileSync(new URL('./vectors.json', import.meta.url), 'utf8')).webhook;
+  const initial = defaultState();
+  initial.webhook = { channel_id: 'ch1', subscription_id: 'sub1', secret: v.secret, url: 'https://x/webhooks/abillio' };
+  const told: string[] = [];
+  // fileLikeState: each request reads its own copy, as two requests read state.json.
+  const { app, state } = appWith((async () => ({})) as Api, fileLikeState(initial), 'https://x', () => told.push('refresh'), () => Number(v.timestamp) * 1000 + 1000);
+  const deliver = () => app.request('/webhooks/abillio', { method: 'POST', body: v.body, headers: { 'content-type': 'application/json', 'x-timestamp': v.timestamp, 'x-signature': v.signature_header } });
+  const answers = await Promise.all([deliver(), deliver()]);
+  assert.deepEqual(answers.map(r => r.status), [200, 200]);
+  assert.equal(state.load().events.length, 1);
+  assert.equal(told.length, 1);
+});
+
+type NotificationCall = { method: string; path: string; body: string; key: string };
+
+// Abillio's notification endpoints as the connect press meets them, recording
+// each call's exact body and key; `answer` may take over any call first
+// (throw to fail it).
+function fakeNotificationsApi(answer: (call: NotificationCall) => unknown = () => undefined) {
+  const calls: NotificationCall[] = [];
+  const api = (async (method: string, path: string, body: unknown, opts?: { idempotencyKey?: string }) => {
+    const call = { method, path, body: JSON.stringify(body ?? null), key: opts?.idempotencyKey ?? '' };
+    calls.push(call);
+    const taken = await answer(call);
+    if (taken !== undefined) return taken;
+    if (method === 'POST' && path === '/accounts/notifications/channels/') return { id: 'ch1' };
+    if (method === 'POST' && path === '/accounts/notifications/subscriptions/') return { id: 'sub1' };
+    if (method === 'PATCH' && path === '/accounts/notifications/channels/ch1') return { id: 'ch1' };
+    throw new Error(`unexpected ${method} ${path}`);
+  }) as Api;
+  return {
+    api,
+    channels: () => calls.filter(c => c.method === 'POST' && c.path === '/accounts/notifications/channels/'),
+    subscriptions: () => calls.filter(c => c.method === 'POST' && c.path === '/accounts/notifications/subscriptions/'),
+    moves: () => calls.filter(c => c.method === 'PATCH'),
+  };
+}
+
+function pressConnect(app: App) {
+  return app.request('/steps/events/connect', { method: 'POST' });
+}
+
+const A = 'https://a.trycloudflare.com';
+const B = 'https://b.trycloudflare.com';
+
+test('a refused subscription keeps the channel stored: the next press creates only the subscription, under a new key, and stores it', async () => {
+  let refuse = true;
+  const fake = fakeNotificationsApi(call => {
+    if (call.path === '/accounts/notifications/subscriptions/' && refuse) { refuse = false; throw new AbillioError(403, { error: { code: 'forbidden', message: 'Not granted' } }, ''); }
+  });
+  const { app, state } = appWith(fake.api, fileLikeState(), A);
+  await pressConnect(app);
+  const channel = JSON.parse(fake.channels()[0].body);
+  assert.deepEqual(state.load().webhook, { channel_id: 'ch1', subscription_id: null, secret: channel.secret, url: `${A}/webhooks/abillio` }, 'the channel is stored as soon as Abillio answers');
+  await pressConnect(app);
+  assert.equal(fake.channels().length, 1, 'the channel is not created again');
+  const [refused, again] = fake.subscriptions();
+  assert.notEqual(again.key, refused.key, 'refused in its envelope: the next press is a new attempt');
+  assert.equal(state.load().webhook?.subscription_id, 'sub1');
+  assert.equal(state.load().webhook_request, null, 'a complete webhook needs no pending request');
+});
+
+test('a lost channel answer: the next press re-sends the stored request byte for byte under the same key, then moves the channel to the new URL', async () => {
+  let lose = true;
+  const fake = fakeNotificationsApi(call => {
+    if (call.path === '/accounts/notifications/channels/' && lose) { lose = false; throw new TypeError('fetch failed'); }
+  });
+  const store = fileLikeState();
+  await pressConnect(appWith(fake.api, store, A).app);
+  assert.equal(store.load().webhook, null);
+  // The tunnel restarted meanwhile, on another URL.
+  await pressConnect(appWith(fake.api, store, B).app);
+  const [lost, retry] = fake.channels();
+  assert.equal(retry.key, lost.key, 'the outcome is unknown, so the retry sends the same key');
+  assert.equal(retry.body, lost.body, 'and the same bytes, secret and destination included: Abillio replays instead of refusing another request');
+  assert.deepEqual(fake.moves().map(m => JSON.parse(m.body).destination), [`${B}/webhooks/abillio`], 'then the channel is moved to where this server now answers');
+  assert.deepEqual(store.load().webhook, { channel_id: 'ch1', subscription_id: 'sub1', secret: JSON.parse(lost.body).secret, url: `${B}/webhooks/abillio` });
+});
+
+test('a channel refused in its envelope: the next press is a new attempt, with a new key and a new request', async () => {
+  let refuse = true;
+  const fake = fakeNotificationsApi(call => {
+    if (call.path === '/accounts/notifications/channels/' && refuse) { refuse = false; throw new AbillioError(422, { error: { code: 'validation_error', message: 'Enter a valid URL.' } }, ''); }
+  });
+  const { app, state } = appWith(fake.api, fileLikeState(), A);
+  await pressConnect(app);
+  assert.equal(state.load().webhook_request, null, 'the refused request goes with its key');
+  await pressConnect(app);
+  const [refused, again] = fake.channels();
+  assert.notEqual(again.key, refused.key);
+  assert.notEqual(JSON.parse(again.body).secret, JSON.parse(refused.body).secret);
+  assert.equal(state.load().webhook?.subscription_id, 'sub1');
+});
+
+test('a move is an event: each settled PATCH spends its key, so going back and forth moves the channel every time', async () => {
+  const fake = fakeNotificationsApi();
+  const connected = defaultState();
+  connected.webhook = { channel_id: 'ch1', subscription_id: 'sub1', secret: 'a'.repeat(64), url: `${A}/webhooks/abillio` };
+  const store = fileLikeState(connected);
+  for (const url of [B, A, B]) await pressConnect(appWith(fake.api, store, url).app);
+  assert.deepEqual(fake.moves().map(m => JSON.parse(m.body).destination), [B, A, B].map(u => `${u}/webhooks/abillio`));
+  assert.equal(new Set(fake.moves().map(m => m.key)).size, 3, 'back to B is a new move, not a replay of the first one');
+  assert.equal(store.load().webhook?.url, `${B}/webhooks/abillio`);
+  assert.deepEqual(Object.keys(store.load().idempotency).filter(action => action.startsWith('webhook:patch:')), []);
+});
+
+test('a poll writes back only what it found: an event the store no longer has does not come back from its older copy', async t => {
+  t.mock.timers.enable({ apis: ['setInterval'] });
+  const initial = issuedState('pending', { id: 'p1', status: 'pending' });
+  initial.events = [{ received_at: '2026-10-19T10:00:00.000Z', event_type: 'channel.test', data: {}, via: 'webhook', dedupe_key: 'before-the-reset' }];
+  const store = fileLikeState(initial);
+  const api = (async (_m: string, path: string) => {
+    if (path === '/onboarding/sessions/s1') {
+      // While the poll is out, the partner starts over: the events and steps 3–4 go.
+      store.update(s => { s.events = []; s.invoice = null; s.invoice_request = null; s.payout = null; });
+      return { state: 'in_progress', can_be_paid: false, purpose: 'onboarding', requirements: [] };
+    }
+    if (path === '/accounts/invoices/inv-1/') return { id: 'inv-1', status: 'paid' };
+    if (path === '/engagements/e1/payouts/p1') return { id: 'p1', status: 'paid' };
+    throw new Error(path);
+  }) as Api;
+  let told!: () => void;
+  const stored = new Promise<void>(resolve => { told = resolve; });
+  appWith(api, store, null, () => told(), Date.now, 5000);
+  t.mock.timers.tick(5000);
+  await stored;
+  assert.deepEqual(store.load().events.filter(e => e.dedupe_key === 'before-the-reset'), []);
+  assert.deepEqual({ invoice: store.load().invoice, payout: store.load().payout }, { invoice: null, payout: null }, 'nor does a row it read');
 });
