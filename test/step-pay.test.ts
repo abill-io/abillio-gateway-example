@@ -22,13 +22,16 @@ test('payInvoice sends invoice_uuid with an idempotency key tied to the invoice'
   assert.equal(calls[0].key, calls[1].key);
 });
 
-test('findPayout picks the payout of this invoice; simulatePayout posts the outcome', async () => {
+test('findPayout asks for the payout of this invoice and picks it by invoice_uuid; simulatePayout posts the outcome', async () => {
+  const lookups: string[] = [];
   const api = (async (method: string, path: string, body: unknown) => {
-    if (path === '/engagements/e1/payouts/') return { items: [{ id: 'p-other', status: 'paid', invoice_uuid: 'inv-0' }, { id: 'p1', status: 'pending', invoice_uuid: 'inv-1' }] };
+    // Both rows whatever the filter says, like a server that ignores it: the pick still goes by invoice_uuid.
+    if (path.startsWith('/engagements/e1/payouts/?')) { lookups.push(path); return { items: [{ id: 'p-other', status: 'paid', invoice_uuid: 'inv-0' }, { id: 'p1', status: 'pending', invoice_uuid: 'inv-1' }] }; }
     if (method === 'POST' && path === '/engagements/e1/payouts/p1/sandbox/simulate') { assert.deepEqual(body, { outcome: 'paid' }); return { id: 'p1', status: 'paid' }; }
     throw new Error(path);
   }) as Api;
   assert.deepEqual(await findPayout(api, 'e1', 'inv-1'), { id: 'p1', status: 'pending' });
   assert.equal(await findPayout(api, 'e1', 'inv-9'), null);
+  assert.deepEqual(lookups, ['/engagements/e1/payouts/?invoice_uuid=inv-1', '/engagements/e1/payouts/?invoice_uuid=inv-9']);
   assert.deepEqual(await simulatePayout(api, defaultState(), 'e1', 'p1', 'paid'), { id: 'p1', status: 'paid' });
 });

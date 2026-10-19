@@ -2,6 +2,7 @@ import type { State } from '../lib/store.ts';
 import type { TraceEntry } from '../lib/trace.ts';
 import type { KeyReport } from '../steps/01-key.ts';
 import { issueStage, pendingRequest } from '../steps/03-issue.ts';
+import { DEFAULT_COMPANY, PAYOUT_OUTCOMES } from '../steps/04-pay.ts';
 import { esc, page } from './layout.ts';
 import { errorBox, jsonBlock, tracePanel } from './partials.ts';
 
@@ -74,14 +75,19 @@ export function issuePanel(state: State): string {
 export function payPanel(state: State): string {
   const inv = state.invoice;
   const payout = state.payout;
-  const company = state.freelancer?.servicing_company_slug ?? 'abillio-ks';
-  const canPay = Boolean(inv && ['approved', 'pending', 'partial_paid', 'overdue'].includes(inv.status));
+  const company = state.freelancer?.servicing_company_slug ?? DEFAULT_COMPANY;
+  const payable = Boolean(inv && ['approved', 'pending', 'partial_paid', 'overdue'].includes(inv.status));
+  // A paid invoice keeps its button: under the stored key a press replays the
+  // payment, which is the idempotency to show.
+  const paid = inv?.status === 'paid';
+  const payLabel = paid ? 'Pay again — replays the same payment (no second debit)' : `Pay invoice ${inv?.number ?? ''}`;
   return `<section class="panel" id="step-4"><h2>Step 4 — Pay it from the wallet</h2>
     <p><code>POST /accounts/wallet/sandbox/simulate-deposit</code> funds the sandbox wallet, <code>POST /accounts/wallet/pay-invoice/</code> pays what the invoice still owes, Abillio creates the payout; <code>POST …/payouts/{id}/sandbox/simulate</code> settles it as the bank would.</p>
-    <form method="post" action="/steps/pay/fund" class="inline"><label>Deposit <input name="amount" value="250.00" pattern="\\d+(\\.\\d{1,2})?"></label> EUR on <code>${esc(company)}</code> <button ${state.account ? '' : 'disabled'}>Fund the wallet</button></form>
-    <form method="post" action="/steps/pay/pay" class="inline"><button ${canPay ? '' : 'disabled'}>Pay invoice ${esc(inv?.number ?? '')}</button></form>
+    <form method="post" action="/steps/pay/fund"><label>Deposit <input name="amount" value="250.00" required pattern="\\d+(\\.\\d{1,2})?"></label> EUR on <code>${esc(company)}</code> <button ${state.account ? '' : 'disabled'}>Fund the wallet</button></form>
+    <form method="post" action="/steps/pay/pay"><button ${payable || paid ? '' : 'disabled'}>${esc(payLabel)}</button></form>
+    ${paid && !payout ? '<p class="muted">No payout was created for this payment — the freelancer cannot be paid yet (payout method or verification missing); the <code>wallet.auto_payout_blocked</code> event says why.</p>' : ''}
     ${payout ? `<p>Payout <code>${esc(payout.id)}</code> — status <code>${esc(payout.status)}</code></p>
-    <form method="post" action="/steps/pay/simulate" class="inline">${['processing', 'paid', 'rejected', 'returned'].map(o => `<button name="outcome" value="${esc(o)}">Simulate ${esc(o)}</button>`).join(' ')}</form>` : ''}
+    <form method="post" action="/steps/pay/simulate">${PAYOUT_OUTCOMES.map(o => `<button name="outcome" value="${esc(o)}">Simulate ${esc(o)}</button>`).join(' ')}</form>` : ''}
   </section>`;
 }
 

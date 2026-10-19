@@ -370,53 +370,125 @@ test('a refusal forgets only the key its own call sent: a key and a request anot
 
 // --- Step 4 -------------------------------------------------------------------
 
+function pressSimulate(app: App, outcome: string) {
+  return app.request('/steps/pay/simulate', { method: 'POST', body: new URLSearchParams({ outcome }), headers: { 'content-type': 'application/x-www-form-urlencoded' } });
+}
+
+// joinedState() with invoice inv-1 issued and, once Abillio made one, its payout.
+function issuedState(status = 'pending', payout: State['payout'] = null): State {
+  const s = joinedState();
+  s.invoice = { id: 'inv-1', number: 'INV-1', status, public_url: 'https://new.abillio.dev/invoice/inv-1' };
+  s.payout = payout;
+  return s;
+}
+
 test('the pay routes fund, pay and settle, storing the payout', async () => {
-  const api = (async (method: string, path: string) => {
-    if (path === '/accounts/wallet/sandbox/simulate-deposit') return [{ company_slug: 'abillio-ks', available: { amount: '250.00' } }];
+  const deposits: { body: unknown; key: string }[] = [];
+  const api = (async (method: string, path: string, body: unknown, opts?: { idempotencyKey?: string }) => {
+    if (path === '/accounts/wallet/sandbox/simulate-deposit') { deposits.push({ body, key: opts?.idempotencyKey ?? '' }); return [{ company_slug: 'abillio-services-ou', available: { amount: '250.00' } }]; }
     if (path === '/accounts/wallet/pay-invoice/') return { created: true, operation_id: 'op-1' };
-    if (path === '/engagements/e1/payouts/') return { items: [{ id: 'p1', status: 'pending', invoice_uuid: 'inv-1' }] };
+    if (path === '/engagements/e1/payouts/?invoice_uuid=inv-1') return { items: [{ id: 'p1', status: 'pending', invoice_uuid: 'inv-1' }] };
     if (path === '/engagements/e1/payouts/p1/sandbox/simulate') return { id: 'p1', status: 'paid' };
+    if (path === '/engagements/e1/payouts/p1') return { id: 'p1', status: 'paid' };
     if (path === '/accounts/invoices/inv-1/') return { id: 'inv-1', invoice_number: 'A-1', status: 'paid', public_url: 'u' };
     throw new Error(`${method} ${path}`);
   }) as Api;
   const initial = defaultState();
   initial.account = { id: 'a1', name: 'Acme', slug: 'acme' };
-  initial.freelancer = { email: 'anna@example.com', session_id: 's1', session_url: 'https://new.abillio.dev/s/t', engagement_id: 'e1', servicing_company_slug: 'abillio-ks' };
+  // Served by the Estonian company, not the default one: the deposit has to land on the freelancer's.
+  initial.freelancer = { email: 'anna@example.com', session_id: 's1', session_url: 'https://new.abillio.dev/s/t', engagement_id: 'e1', servicing_company_slug: 'abillio-services-ou' };
   initial.invoice = { id: 'inv-1', number: 'A-1', status: 'approved', public_url: 'u' };
   const { app, state } = appWith(api, memoryState(initial));
-  assert.equal((await app.request('/steps/pay/fund', { method: 'POST', body: new URLSearchParams({ amount: '250.00' }), headers: { 'content-type': 'application/x-www-form-urlencoded' } })).status, 200);
+  const fund = () => app.request('/steps/pay/fund', { method: 'POST', body: new URLSearchParams({ amount: '250.00' }), headers: { 'content-type': 'application/x-www-form-urlencoded' } });
+  assert.equal((await fund()).status, 200);
+  assert.equal((await fund()).status, 200);
+  const sent = { amount: '250.00', currency: 'EUR', company: 'abillio-services-ou' };
+  assert.deepEqual(deposits.map(d => d.body), [sent, sent], 'the amount, in EUR, on the company serving the freelancer');
+  assert.notEqual(deposits[1].key, deposits[0].key, 'a deposit is a new event every press, so each carries a fresh key');
   assert.equal((await app.request('/steps/pay/pay', { method: 'POST' })).status, 200);
+  assert.equal(state.load().invoice?.status, 'paid', 'the invoice is read back after paying');
   assert.equal(state.load().payout?.status, 'pending');
-  assert.equal((await app.request('/steps/pay/simulate', { method: 'POST', body: new URLSearchParams({ outcome: 'paid' }), headers: { 'content-type': 'application/x-www-form-urlencoded' } })).status, 200);
+  assert.equal((await pressSimulate(app, 'paid')).status, 200);
   assert.equal(state.load().payout?.status, 'paid');
 });
 
-test('Pay keeps its key until Abillio refuses in its envelope: a lost answer and a repeated press replay, never a second payment', async () => {
+test('Pay keeps its key until Abillio refuses the payment itself: a lost answer, a refused lookup after paying and a repeated press all replay', async () => {
   const keys: string[] = [];
   const outcomes: (() => unknown)[] = [
     () => { throw new AbillioError(409, { error: { code: 'insufficient_balance', message: 'Insufficient balance' } }, ''); },
     () => { throw new TypeError('fetch failed'); },
     () => ({ created: true, operation_id: 'op-1' }),
-    () => ({ created: false, operation_id: 'op-1' }),
+    () => ({ created: true, operation_id: 'op-1' }),
   ];
   const api = (async (method: string, path: string, _b: unknown, opts?: { idempotencyKey?: string }) => {
     if (method === 'POST' && path === '/accounts/wallet/pay-invoice/') { keys.push(opts?.idempotencyKey ?? ''); return outcomes[keys.length - 1](); }
-    if (path === '/engagements/e1/payouts/') return { items: [{ id: 'p1', status: 'pending', invoice_uuid: 'inv-1' }] };
-    if (path === '/accounts/invoices/inv-1/') return { status: 'paid' };
+    if (path === '/engagements/e1/payouts/?invoice_uuid=inv-1') {
+      // Right after the payment that went through, the lookup is refused in
+      // Abillio's envelope: a verified 4xx, but of a read, not of the payment.
+      if (keys.length === 3) throw new AbillioError(429, { error: { code: 'rate_limited', message: 'Too many requests' } }, '');
+      return { items: [{ id: 'p1', status: 'pending', invoice_uuid: 'inv-1' }] };
+    }
+    if (path === '/accounts/invoices/inv-1/') return { id: 'inv-1', status: 'paid' };
     throw new Error(`unexpected ${method} ${path}`);
   }) as Api;
-  const initial = joinedState();
-  initial.invoice = { id: 'inv-1', number: 'INV-1', status: 'pending', public_url: 'https://new.abillio.dev/invoice/inv-1' };
   // fileLikeState, like state.json: a key minted on the copy a press loaded is
   // lost unless the route stores it.
-  const { app } = appWith(api, fileLikeState(initial));
+  const { app, state } = appWith(api, fileLikeState(issuedState()));
   const press = async () => (await app.request('/steps/pay/pay', { method: 'POST' })).text();
   assert.ok((await press()).includes('insufficient_balance'), 'the refusal is shown as is');
   await press();
-  await press();
+  assert.ok((await press()).includes('rate_limited'), 'so is the refused lookup');
+  assert.equal(state.load().invoice?.status, 'pending', 'nothing was read back, so Pay is still offered');
   await press();
   assert.equal(keys.length, 4);
   assert.notEqual(keys[1], keys[0], 'refused in its envelope: nothing was paid, so the next press is a new attempt');
   assert.equal(keys[2], keys[1], 'no answer: the payment may have gone through, so the retry sends the same key');
-  assert.equal(keys[3], keys[2], 'a press after paying replays under the same key');
+  assert.equal(keys[3], keys[2], 'paid, and only the lookup was refused: the next press replays the payment, never a second one');
+  assert.deepEqual({ status: state.load().invoice?.status, payout: state.load().payout }, { status: 'paid', payout: { id: 'p1', status: 'pending' } }, 'and reads both back');
+});
+
+test('a simulation is an event: a settled press spends its key, a lost answer keeps it, and what is stored is a fresh read', async () => {
+  const sent: { outcome: string; key: string }[] = [];
+  let payoutStatus = 'pending';
+  const api = (async (method: string, path: string, body: unknown, opts?: { idempotencyKey?: string }) => {
+    if (method === 'POST' && path === '/engagements/e1/payouts/p1/sandbox/simulate') {
+      const { outcome } = body as { outcome: string };
+      sent.push({ outcome, key: opts?.idempotencyKey ?? '' });
+      payoutStatus = outcome === 'returned' ? 'pending' : outcome;
+      // The first answer is lost on the way back, though the payout moved.
+      if (sent.length === 1) throw new TypeError('fetch failed');
+      // An answer can be a replay, older than the payout: it is never what gets stored.
+      return { id: 'p1', status: 'processing' };
+    }
+    if (method === 'GET' && path === '/engagements/e1/payouts/p1') return { id: 'p1', status: payoutStatus };
+    throw new Error(`unexpected ${method} ${path}`);
+  }) as Api;
+  const { app, state } = appWith(api, fileLikeState(issuedState('paid', { id: 'p1', status: 'pending' })));
+  // paid (no answer), paid again (the retry), returned (the payout reopens), paid.
+  for (const outcome of ['paid', 'paid', 'returned', 'paid']) await pressSimulate(app, outcome);
+  assert.equal(sent.length, 4);
+  assert.equal(sent[1].key, sent[0].key, 'no answer: the outcome is unknown, so the retry sends the same key');
+  assert.notEqual(sent[3].key, sent[1].key, 'a settled simulation spends its key: paid after returned is played again, not replayed');
+  assert.deepEqual(Object.keys(state.load().idempotency).filter(action => action.startsWith('simulate:')), [], 'no simulate key outlives its answer');
+  assert.deepEqual(state.load().payout, { id: 'p1', status: 'paid' }, 'what is stored is the read-back, not the answer');
+});
+
+test('the pay and simulate answers are written only while the invoice and payout they acted on are still stored', async () => {
+  const store = fileLikeState(issuedState());
+  const api = (async (method: string, path: string) => {
+    // While the call is out, another freelancer is found: /join/status starts steps 3 and 4 over.
+    if (method === 'POST') store.update(s => { s.invoice = null; s.invoice_request = null; s.payout = null; });
+    if (path === '/accounts/wallet/pay-invoice/') return { created: true, operation_id: 'op-1' };
+    if (path === '/engagements/e1/payouts/?invoice_uuid=inv-1') return { items: [{ id: 'p1', status: 'pending', invoice_uuid: 'inv-1' }] };
+    if (path === '/accounts/invoices/inv-1/') return { id: 'inv-1', status: 'paid' };
+    if (path === '/engagements/e1/payouts/p1/sandbox/simulate') return { id: 'p1', status: 'paid' };
+    if (path === '/engagements/e1/payouts/p1') return { id: 'p1', status: 'paid' };
+    throw new Error(`unexpected ${method} ${path}`);
+  }) as Api;
+  const { app, state } = appWith(api, store);
+  await app.request('/steps/pay/pay', { method: 'POST' });
+  assert.equal(state.load().payout, null, "the previous invoice's payout is not stored for the next freelancer");
+  store.update(s => { s.invoice = issuedState('paid').invoice; s.payout = { id: 'p1', status: 'pending' }; });
+  await pressSimulate(app, 'paid');
+  assert.equal(state.load().payout, null, "nor is the previous payout's read");
 });

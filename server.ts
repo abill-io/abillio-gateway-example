@@ -13,7 +13,7 @@ import { Trace, trace as processTrace } from './lib/trace.ts';
 import { checkKey, type KeyReport } from './steps/01-key.ts';
 import { findEngagement, onboardingAction, onboardingBody, readSession, returnUrlFor, startOnboarding, type JoinForm } from './steps/02-onboard.ts';
 import { draftInvoice, findSelfClient, invoiceRequest, issueInvoice, pendingRequest } from './steps/03-issue.ts';
-import { findPayout, fundWallet, payInvoice, simulatePayout } from './steps/04-pay.ts';
+import { DEFAULT_COMPANY, PAYOUT_OUTCOMES, findPayout, fundWallet, payAction, payInvoice, readInvoice, readPayout, simulateAction, simulatePayout } from './steps/04-pay.ts';
 import { companyPage } from './views/company.ts';
 import { joinPage } from './views/join.ts';
 import { page } from './views/layout.ts';
@@ -61,21 +61,27 @@ export function createApp(deps: Deps): Hono {
   // another visitor) may have stored keys meanwhile. The forget, and whatever
   // `onRefused` clears with it in the same write, happens only while the
   // stored key is still the one this call sent: a newer one, and what came
-  // with it, belong to another press.
-  async function keyed<T>(state: State, action: string, call: () => Promise<T>, onRefused: (s: State) => void = () => {}): Promise<T> {
+  // with it, belong to another press. `once` marks an action that is an event,
+  // not a state (a sandbox simulation): after any settled answer, a success
+  // too, its key is forgotten, so the next press plays it again; only an
+  // unknown outcome keeps it, so a blind retry replays.
+  async function keyed<T>(state: State, action: string, call: () => Promise<T>, opts: { once?: boolean; onRefused?: (s: State) => void } = {}): Promise<T> {
     let claimed = '';
     deps.state.update(s => { claimed = state.idempotency[action] = s.idempotency[action] ??= randomUUID(); });
+    const forget = (also: (s: State) => void = () => {}) => {
+      forgetIdempotencyKey(state, action);
+      deps.state.update(s => {
+        if (s.idempotency[action] !== claimed) return;
+        delete s.idempotency[action];
+        also(s);
+      });
+    };
     try {
-      return await call();
+      const answer = await call();
+      if (opts.once) forget();
+      return answer;
     } catch (err) {
-      if (err instanceof AbillioError && err.verified) {
-        forgetIdempotencyKey(state, action);
-        deps.state.update(s => {
-          if (s.idempotency[action] !== claimed) return;
-          delete s.idempotency[action];
-          onRefused(s);
-        });
-      }
+      if (err instanceof AbillioError && err.verified) forget(opts.onRefused);
       throw err;
     }
   }
@@ -176,7 +182,7 @@ export function createApp(deps: Deps): Hono {
         const request = deps.state.update(s => { s.invoice_request = s.invoice_request?.engagement_id === engagementId ? s.invoice_request : fresh; }).invoice_request ?? fresh;
         // On a certain refusal nothing was drafted, so the request goes with the
         // key and the form is free again.
-        const drafted = await keyed(state, `draft:${request.engagement_id}`, () => draftInvoice(deps.api, state, request, self.id), s => { s.invoice_request = null; });
+        const drafted = await keyed(state, `draft:${request.engagement_id}`, () => draftInvoice(deps.api, state, request, self.id), { onRefused: s => { s.invoice_request = null; } });
         invoice = { id: drafted.id, number: drafted.number, status: drafted.status, public_url: drafted.public_url };
         const stored = invoice;
         // Another press may have stored this draft, and issued it, meanwhile.
@@ -198,7 +204,7 @@ export function createApp(deps: Deps): Hono {
     const form = Object.fromEntries((await c.req.formData()).entries()) as Record<string, string>;
     const state = deps.state.load();
     try {
-      await fundWallet(deps.api, form.amount || '250.00', 'EUR', state.freelancer?.servicing_company_slug ?? 'abillio-ks');
+      await fundWallet(deps.api, form.amount || '250.00', 'EUR', state.freelancer?.servicing_company_slug ?? DEFAULT_COMPANY);
       return render(c);
     } catch (err) { return render(c, err); }
   });
@@ -212,25 +218,39 @@ export function createApp(deps: Deps): Hono {
       // keyed() claims pay:<invoice> in the store before the call and forgets
       // it only on a verified failure, so a retry after a timeout replays and
       // never pays twice; the GETs stay outside it.
-      await keyed(state, `pay:${invoiceId}`, () => payInvoice(deps.api, state, invoiceId));
+      await keyed(state, payAction(invoiceId), () => payInvoice(deps.api, state, invoiceId));
+      // Both reads come before the one write: a failed lookup stores nothing,
+      // so the invoice still reads `pending`, Pay stays enabled, and pressing
+      // it again replays the payment and reads again.
       const payout = await findPayout(deps.api, engagementId, invoiceId);
-      // The invoice is read back on the account surface: there is no GET under /engagements/…/invoices/.
-      const invoice = await deps.api<{ status: string }>('GET', `/accounts/invoices/${encodeURIComponent(invoiceId)}/`);
-      deps.state.update(s => { if (s.invoice?.id === invoiceId) s.invoice.status = invoice.status; s.payout = payout; });
+      const invoice = await readInvoice(deps.api, invoiceId);
+      // Only onto the invoice this press paid: meanwhile another freelancer may
+      // have been found, which starts steps 3 and 4 over.
+      deps.state.update(s => {
+        if (s.invoice?.id !== invoiceId) return;
+        s.invoice.status = invoice.status;
+        s.payout = payout;
+      });
       return render(c);
     } catch (err) { return render(c, err); }
   });
 
   app.post('/steps/pay/simulate', async c => {
     const form = Object.fromEntries((await c.req.formData()).entries()) as Record<string, string>;
-    const outcome = (['processing', 'paid', 'rejected', 'returned'] as const).find(o => o === form.outcome);
+    const outcome = PAYOUT_OUTCOMES.find(o => o === form.outcome);
     const state = deps.state.load();
     const engagementId = state.freelancer?.engagement_id;
     if (!outcome || !state.payout || !engagementId) return render(c, new Error('Pay the invoice first; then pick an outcome.'));
     try {
       const payoutId = state.payout.id;
-      const payout = await keyed(state, `simulate:${payoutId}:${outcome}`, () => simulatePayout(deps.api, state, engagementId, payoutId, outcome));
-      deps.state.update(s => { s.payout = payout; });
+      // A simulation is an event, not a state: once answered, its key is spent
+      // (`once`), so `paid` after `returned` plays again instead of replaying
+      // the first `paid`. An answer can still be a replay (after a lost one)
+      // and older than the payout, so what is stored is a fresh read, and only
+      // onto the payout it was for.
+      await keyed(state, simulateAction(payoutId, outcome), () => simulatePayout(deps.api, state, engagementId, payoutId, outcome), { once: true });
+      const payout = await readPayout(deps.api, engagementId, payoutId);
+      deps.state.update(s => { if (s.payout?.id === payoutId) s.payout = payout; });
       return render(c);
     } catch (err) { return render(c, err); }
   });
