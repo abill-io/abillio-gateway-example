@@ -76,9 +76,10 @@ resets it. It is the same code as this repo, pinned to a tag.
 Two files hold secrets, and neither belongs in a repository. `.env` holds
 `ABILLIO_PRIVATE_KEY`, the seed that signs as your company. `data/state.json`
 holds the webhook signing secret in clear, and whoever has it can forge a
-delivery your receiver will believe. Both are in `.gitignore`, but only at their
-default paths: a `STATE_FILE` somewhere else is not ignored, so keep it out of
-the repository yourself.
+delivery your receiver will believe; it also holds the full API key id, which
+the page cuts down to its last four characters. Both are in `.gitignore`, but
+only at their default paths: a `STATE_FILE` somewhere else is not ignored, so
+keep it out of the repository yourself.
 
 Use a sandbox key only. The sample mints links, invoices and payments with
 whatever key it is given, so every button that writes to Abillio first asks
