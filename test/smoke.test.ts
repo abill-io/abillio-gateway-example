@@ -1,5 +1,10 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { spawnSync } from 'node:child_process';
+import { mkdtempSync, rmdirSync, symlinkSync, unlinkSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { AbillioError, type Api } from '../lib/abillio.ts';
 import { WRONG_ENGAGEMENT, describeError, runSmoke } from '../scripts/smoke.ts';
 
@@ -39,14 +44,51 @@ test('the smoke passes only when the settled payout reads paid', async () => {
   await assert.rejects(smoke(sandbox({ 'GET /engagements/e1/payouts/p1': () => ({ id: 'p1', status: 'processing' }) })), /payout p1 reads processing, not paid/);
 });
 
-test('a 403 or a 404 on the engagement says to check SMOKE_ENGAGEMENT_ID, not the key', async () => {
+test('a refusal on the engagement points at SMOKE_ENGAGEMENT_ID: a 403 keeps the permission hint too, a 404 is only the id', async () => {
   for (const status of [403, 404]) {
-    const refused = () => { throw new AbillioError(status, { error: { code: status === 403 ? 'forbidden' : 'not_found', message: 'Object authorization is no longer valid.' } }, ''); };
-    await assert.rejects(smoke(sandbox({ 'POST /engagements/e1/invoices/': refused })), (err: unknown) => err instanceof AbillioError && err.hint === WRONG_ENGAGEMENT, String(status));
+    const envelope = { error: { code: status === 403 ? 'forbidden' : 'not_found', message: 'Object authorization is no longer valid.' } };
+    // What the client itself says: a 403 names the key's permissions, a 404 nothing.
+    const permission = new AbillioError(status, envelope, '').hint;
+    const refused = () => { throw new AbillioError(status, envelope, ''); };
+    await assert.rejects(smoke(sandbox({ 'POST /engagements/e1/invoices/': refused })), (err: unknown) => {
+      assert.ok(err instanceof AbillioError);
+      const hints = [...(permission ? [permission] : []), WRONG_ENGAGEMENT];
+      assert.deepEqual(err.hint?.split('\n'), hints, `${status}`);
+      assert.deepEqual(describeError(err).slice(1, 1 + hints.length), hints, `${status}: one line each`);
+      return true;
+    });
   }
 });
 
-test("a failed fetch's reason is printed: it sits in the error's cause", () => {
-  const failed = new TypeError('fetch failed', { cause: new Error('getaddrinfo ENOTFOUND backend.abillio.dev') });
-  assert.deepEqual(describeError(failed), ['fetch failed', '  cause: getaddrinfo ENOTFOUND backend.abillio.dev']);
+test("a failed fetch's reason is printed: the error's cause, an AggregateError's code and the errors it gathers", () => {
+  const dns = new TypeError('fetch failed', { cause: new Error('getaddrinfo ENOTFOUND backend.abillio.dev') });
+  assert.deepEqual(describeError(dns), ['fetch failed', '  cause: getaddrinfo ENOTFOUND backend.abillio.dev']);
+  // A refused connection is an AggregateError with no message: one error per address tried.
+  const attempts = [new Error('connect ECONNREFUSED ::1:4000'), new Error('connect ECONNREFUSED 127.0.0.1:4000')];
+  const refused = new TypeError('fetch failed', { cause: Object.assign(new AggregateError(attempts, ''), { code: 'ECONNREFUSED' }) });
+  assert.deepEqual(describeError(refused), ['fetch failed', '  cause: ECONNREFUSED (connect ECONNREFUSED ::1:4000; connect ECONNREFUSED 127.0.0.1:4000)']);
+  const uncoded = new TypeError('fetch failed', { cause: new AggregateError(attempts, '') });
+  assert.deepEqual(describeError(uncoded), ['fetch failed', '  cause: connect ECONNREFUSED ::1:4000; connect ECONNREFUSED 127.0.0.1:4000']);
+});
+
+test('the smoke runs when started through a symlink, and an npm run smoke that never reaches it fails instead of passing', () => {
+  const root = fileURLToPath(new URL('..', import.meta.url));
+  const node = (args: string[], env: Record<string, string>) =>
+    spawnSync(process.execPath, ['--experimental-strip-types', '--disable-warning=ExperimentalWarning', ...args], { env: { PATH: process.env.PATH ?? '', ...env }, encoding: 'utf8' });
+  // No key in the environment: a smoke that runs fails on it; one that never
+  // ran would exit 0, and a release gate would pass.
+  const dir = mkdtempSync(join(tmpdir(), 'gw-smoke-'));
+  try {
+    symlinkSync(root, join(dir, 'checkout'));
+    const linked = node([join(dir, 'checkout', 'scripts', 'smoke.ts')], {});
+    assert.equal(linked.status, 1, linked.stderr);
+    assert.match(linked.stderr, /ABILLIO_API_KEY_ID is missing/);
+  } finally {
+    // unlink, never a recursive remove: that would follow the link into the checkout.
+    try { unlinkSync(join(dir, 'checkout')); } catch { /* never linked */ }
+    rmdirSync(dir);
+  }
+  const imported = node(['--input-type=module', '-e', `await import(${JSON.stringify(join(root, 'scripts', 'smoke.ts'))});`], { npm_lifecycle_event: 'smoke' });
+  assert.equal(imported.status, 1, imported.stderr);
+  assert.match(imported.stderr, /nothing ran/);
 });

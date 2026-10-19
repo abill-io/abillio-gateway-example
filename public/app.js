@@ -53,7 +53,12 @@
       if (event.defaultPrevented) return;
       submitting = true;
       // An answer replaces this page within seconds; still here after 30 s,
-      // the navigation was abandoned.
+      // the navigation was abandoned. The trade-off: a request slower than
+      // that gets its buttons back while it is still out, and a second press
+      // then goes out under the same stored key, so Abillio replays it rather
+      // than doing it twice (the deposit and the test delivery, which take a
+      // fresh key each press, would run again); without the timeout a page
+      // whose navigation died would stay disabled and deaf to new events.
       setTimeout(settle, 30_000);
     });
   }

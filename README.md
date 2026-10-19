@@ -6,7 +6,7 @@ their name, pays it from its wallet, the payout goes out, and webhooks tell the
 company what happened. Every call to Abillio is shown on the page as it is made.
 A hosted copy runs at https://demo.abillio.dev.
 
-![The back office after a full walk: the five steps on the left, every call to Abillio on the right](docs/back-office.png)
+![The back office after a full walk: the five steps on the left, every call to Abillio on the right (the freelancer's e-mail masked for the picture)](docs/back-office.png)
 
 It is one Node process with two pages: the company's back office at `/` and the
 freelancer's sign-up page at `/join`. It talks to Abillio's company API, signs
@@ -64,9 +64,11 @@ whatever key it is given, so every button that writes to Abillio first asks
 what **Check the key** stored: until it has seen a sandbox account, the button
 refuses and sends nothing, and on a production account it says *This back
 office runs against sandbox accounts only (the key belongs to a production
-account)*. `ALLOW_PRODUCTION=1` in `.env` lifts the guard, for a partner who has
-read the code and means to run it against real money; the smoke test refuses a
-production account regardless.
+account)*. A check counts only for the key and the `ABILLIO_ACCOUNT` it was made
+with: change either in `.env` and the buttons wait for a new check, and a check
+that fails forgets the account. `ALLOW_PRODUCTION=1` in `.env` lifts the guard,
+for a partner who has read the code and means to run it against real money; the
+smoke test refuses a production account regardless.
 
 ## How it is put together
 
@@ -88,17 +90,20 @@ trace of the last fifty calls, newest first: method, path, request body, status
 and response body as they went over the wire, minus what the page must not show
 to whoever opens it. Headers are never recorded, and any body key named
 `secret`, `private_key`, `password`, `token` or `user_email` reads `[redacted]`.
-Personal data reads `[redacted]` too: in an answer from Abillio, every key that
-holds an e-mail address, a first, last or legal name, a contact person, a phone
-number, an address, a bank account, a personal code or a registration or VAT
-number (`GET /accounts/clients/` returns a row for the account owner's own
-company, with the owner's e-mail and address on it); in a request, only the
-keys no form of the sample types, so the e-mail and names typed on the join
-page and the invoice description show as typed. Display names (`name`,
-`display_name`) are not masked: they are the company's own name and the name
-typed on the join page. The
+Personal data reads `[redacted]` too, by the name of its key: in an answer from
+Abillio, the keys named for an e-mail address (`email`, `accounting_email`,
+`paid_copy_emails`, `recipient_email`), a first, last or legal name, a contact
+person, a phone number, an address, a bank account, a personal code or a
+registration or VAT number, as `lib/abillio.ts` lists them
+(`GET /accounts/clients/` returns a row for the account owner's own company,
+with the owner's e-mail and address on it); in a request, only the keys no form
+of the sample types, so the e-mail and names typed on the join page show as
+typed. Display names (`name`, `display_name`) are not masked: they are the
+company's own name and the name typed on the join page. Nor is free text:
+`internal_notes`, `notes`, `invite_message` and `description` stay readable
+whatever they say, so keep personal data out of them. The
 **What we store** panel shows `data/state.json`, with the webhook signing secret
-cut down to its last four characters; `GET /api/state` and `GET /api/trace`
+and the API key id cut down to their last four characters; `GET /api/state` and `GET /api/trace`
 serve the same two things as JSON. On the hosted copy everyone shares one walk:
 the state, the trace and the made-up `@example.com` addresses in them are the
 same for every visitor, and **Start over** starts the walk over for everybody.
@@ -202,9 +207,12 @@ and three of the entries `GET /me/authorization/` returned:
 The page lists the twelve actions the steps use (`NEEDED_ACTIONS` in
 `steps/01-key.ts`) first and folds the rest away. `context_required` is a yes:
 the call itself carries what the action needs, such as the invoice to pay.
-The step writes `account: { id, name, slug, is_sandbox }` to `data/state.json`.
-Step 3 needs the account id to find the self-client, and every button that
-writes to Abillio needs `is_sandbox` to be true (see [Keep it safe](#keep-it-safe)).
+The step writes `account: { id, name, slug, is_sandbox, key_id, env_account }`
+to `data/state.json`, the last two being the key and the `ABILLIO_ACCOUNT` the
+check was made with. Step 3 needs the account id to find the self-client, and
+every button that writes to Abillio needs `is_sandbox` to be true for the key
+it runs with (see [Keep it safe](#keep-it-safe)). A check that fails clears the
+account.
 
 **What can go wrong.** A 401 means Abillio refused the signature, and the page
 says the usual causes: this machine's clock is more than 300 seconds off,
@@ -638,13 +646,13 @@ the one you sent; a 400 means the clock or a replayed old delivery.
 `{ "ok": true }` after putting the sandbox's own demo data back as it was
 seeded. The freelancers you onboarded, their engagements, invoices and payouts
 are not demo data and stay on Abillio. The sample then forgets the walk:
-`data/state.json` goes back to empty except the webhook channel and
-subscription, which belong to the account and outlive the reset, together with
-a connect request still pending and the keys it went out under (re-sent under a
-new key, that request would create a second channel or subscription). A refused
-reset forgets nothing, since the sandbox still holds the walk. The account goes
-with the rest, so press **Check the key** again before the next walk: the
-buttons that write to Abillio wait for it.
+`data/state.json` goes back to empty except the account the key reaches (it
+belongs to the key, not to the walk, so the next walk can start at once) and
+the webhook channel and subscription, which belong to the account and outlive
+the reset, together with a connect request still pending and the keys it went
+out under (re-sent under a new key, that request would create a second channel
+or subscription). A refused reset forgets nothing, since the sandbox still
+holds the walk.
 
 ## The smoke test
 
@@ -682,7 +690,8 @@ smoke keeps its state in memory, so every run is a new invoice and a new
 payment and `data/state.json` is never touched, and it exits with 1 on the first
 error, so it can gate a release. An engagement id that is not this account's is
 refused with a 403 or a 404 on the draft, and the smoke then says to check
-`SMOKE_ENGAGEMENT_ID` rather than the key.
+`SMOKE_ENGAGEMENT_ID`; on a 403 it names the key's permissions as well, since a
+key without the action is refused the same way.
 
 ## Signing requests in another language
 

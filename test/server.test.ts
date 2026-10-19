@@ -5,11 +5,11 @@ import { createApp } from '../server.ts';
 import { Trace } from '../lib/trace.ts';
 import { defaultState, type State } from '../lib/store.ts';
 import { AbillioError, type Api } from '../lib/abillio.ts';
-import { fileLikeState, memoryState, sandboxState } from './helpers.ts';
+import { TEST_ENV, fileLikeState, memoryState, sandboxState } from './helpers.ts';
 
 export function appWith(api: Api, state = memoryState(), publicUrl: string | null = null, onStored: () => void = () => {}, now: () => number = Date.now, pollIntervalMs: number | null = null, allowProduction = false) {
   const trace = new Trace();
-  const app = createApp({ api, state, trace, publicUrl, port: 4000, abillioOrigin: () => 'https://new.abillio.dev', onStored, now, pollIntervalMs, allowProduction });
+  const app = createApp({ api, state, trace, publicUrl, port: 4000, abillioOrigin: () => 'https://new.abillio.dev', onStored, now, pollIntervalMs, allowProduction, keyId: TEST_ENV.keyId, account: TEST_ENV.account });
   return { app, trace, state };
 }
 
@@ -33,10 +33,10 @@ test('POST /steps/key stores the account and shows the actions table; an error r
   const html = await res.text();
   assert.ok(html.includes('Acme') && html.includes('freelancers.invite'));
   assert.ok(!html.includes('dev@acme.test'), "the key owner's e-mail is not on the page");
-  assert.deepEqual(state.load().account, { id: 'a1', name: 'Acme', slug: 'acme', is_sandbox: true }, 'with whether it is a sandbox, which every write route asks');
+  assert.deepEqual(state.load().account, { id: 'a1', name: 'Acme', slug: 'acme', is_sandbox: true, key_id: 'key_1', env_account: '' }, 'with whether it is a sandbox, which every write route asks, and the key and ABILLIO_ACCOUNT the answer is for');
 });
 
-test('GET /api/state returns the stored state as JSON, without the webhook secret', async () => {
+test('GET /api/state returns the stored state as JSON, without the webhook secret or the API key id', async () => {
   const { app } = appWith((async () => ({})) as Api);
   const res = await app.request('/api/state');
   assert.equal(res.headers.get('content-type')?.includes('application/json'), true);
@@ -44,13 +44,16 @@ test('GET /api/state returns the stored state as JSON, without the webhook secre
   const withSecret = defaultState();
   withSecret.webhook = { channel_id: 'ch1', subscription_id: 'sub1', secret: 'a'.repeat(60) + 'beef', url: 'https://x/webhooks/abillio' };
   withSecret.webhook_request = { url: 'https://x/webhooks/abillio', secret: 'c'.repeat(60) + 'f00d' };
+  // The key check stores the key id it was made with; .env treats it as a secret.
+  withSecret.account = { ...sandboxState().account!, key_id: 'd'.repeat(28) + '1bdf' };
   const { app: app2 } = appWith((async () => ({})) as Api, memoryState(withSecret));
   const body = await (await app2.request('/api/state')).text();
   assert.ok(!body.includes('a'.repeat(60)), 'the secret never leaves the server');
   assert.ok(!body.includes('c'.repeat(60)), "nor does a pending channel request's");
-  assert.ok(body.includes('beef') && body.includes('f00d'), 'their last four characters identify them');
+  assert.ok(!body.includes('d'.repeat(28)), 'nor does the API key id');
+  assert.ok(body.includes('beef') && body.includes('f00d') && body.includes('1bdf'), 'their last four characters identify them');
   const html = await (await app2.request('/')).text();
-  assert.ok(!html.includes('a'.repeat(60)) && !html.includes('c'.repeat(60)));
+  assert.ok(!html.includes('a'.repeat(60)) && !html.includes('c'.repeat(60)) && !html.includes('d'.repeat(28)));
 });
 
 test('the join page opens the popup from the session url and polls the status', async () => {
@@ -736,7 +739,7 @@ test('one poll tick at a time: a tick that finds the last one still waiting on A
 
 // --- Start over ---------------------------------------------------------------
 
-test('POST /reset resets the sandbox and the state but keeps the webhook channel, with its pending request and keys', async () => {
+test('POST /reset resets the sandbox and the state but keeps the account the key reaches and the webhook channel, with its pending request and keys', async () => {
   const initial = sandboxState();
   initial.invoice = { id: 'inv-1', number: 'A-1', status: 'paid', public_url: 'u' };
   // A connect that stopped mid-way: the channel exists on Abillio, the
@@ -765,7 +768,7 @@ test('POST /reset resets the sandbox and the state but keeps the webhook channel
   assert.ok(keys[0] && keys[1] && keys[0] !== keys[1], 'each press is a new reset, under a new key');
   const after = state.load();
   assert.equal(after.invoice, null);
-  assert.equal(after.account, null);
+  assert.deepEqual(after.account, initial.account, "the account is the key's, not the walk's: the next walk needs no new key check");
   assert.deepEqual(after.webhook, initial.webhook, 'the channel still exists on Abillio');
   assert.deepEqual(after.webhook_request, initial.webhook_request);
   assert.deepEqual(after.idempotency, { 'webhook:channel': 'k-channel', 'webhook:subscription': 'k-subscription' }, "the webhook's keys stay with its request, so the next Connect replays instead of subscribing twice");
@@ -794,24 +797,54 @@ test('every route that writes to Abillio runs only on a sandbox account, unless 
     s.webhook = { channel_id: 'ch1', subscription_id: 'sub1', secret: 'a'.repeat(64), url: 'https://old.example/webhooks/abillio' };
     return s;
   };
-  const production = { id: 'a1', name: 'Acme', slug: 'acme', is_sandbox: false };
-  const cases: { account: State['account']; allowProduction: boolean; refusal: string | null }[] = [
-    { account: production, allowProduction: false, refusal: 'This back office runs against sandbox accounts only (the key belongs to a production account).' },
-    { account: null, allowProduction: false, refusal: 'Check the key first (step 1): this back office runs against sandbox accounts only.' },
-    { account: production, allowProduction: true, refusal: null },
+  const checked = sandboxState().account!;
+  const production = { ...checked, is_sandbox: false };
+  const PRODUCTION = 'This back office runs against sandbox accounts only (the key belongs to a production account).';
+  const CHECK_FIRST = 'Check the key first (step 1): this back office runs against sandbox accounts only.';
+  const cases: { label: string; account: State['account']; allowProduction: boolean; refusal: string | null }[] = [
+    { label: 'a production account', account: production, allowProduction: false, refusal: PRODUCTION },
+    { label: 'no key check yet', account: null, allowProduction: false, refusal: CHECK_FIRST },
+    // A check is about the key and ABILLIO_ACCOUNT it was made with: swap either
+    // in .env and the stored answer says nothing about the account now reached.
+    { label: 'checked under another key id', account: { ...checked, key_id: 'key_0' }, allowProduction: false, refusal: CHECK_FIRST },
+    { label: 'checked under another ABILLIO_ACCOUNT', account: { ...checked, env_account: 'other-company' }, allowProduction: false, refusal: CHECK_FIRST },
+    // A state file written before the flag existed.
+    { label: 'stored without a flag', account: { id: 'a1', name: 'Acme', slug: 'acme', key_id: 'key_1', env_account: '' } as unknown as State['account'], allowProduction: false, refusal: CHECK_FIRST },
+    { label: 'ALLOW_PRODUCTION', account: production, allowProduction: true, refusal: null },
   ];
-  for (const { account, allowProduction, refusal } of cases) {
+  for (const { label, account, allowProduction, refusal } of cases) {
     for (const [path, form] of WRITE_ROUTES) {
       const calls: string[] = [];
       const api = (async (method: string, p: string) => { calls.push(`${method} ${p}`); throw new Error('stop at the first call'); }) as Api;
       const { app } = appWith(api, fileLikeState(walk(account)), 'https://x', () => {}, Date.now, null, allowProduction);
       const text = await (await app.request(path, { method: 'POST', body: new URLSearchParams(form), headers: { 'content-type': 'application/x-www-form-urlencoded' } })).text();
       if (refusal) {
-        assert.ok(text.includes(refusal), `${path} refuses: ${refusal}`);
-        assert.deepEqual(calls, [], `${path} sends nothing to Abillio`);
+        assert.ok(text.includes(refusal), `${label}: ${path} refuses`);
+        assert.deepEqual(calls, [], `${label}: ${path} sends nothing to Abillio`);
       } else {
-        assert.ok(calls.length > 0, `${path} goes on to Abillio with ALLOW_PRODUCTION`);
+        assert.ok(calls.length > 0, `${label}: ${path} goes on to Abillio`);
       }
     }
   }
+});
+
+test('the latest key check decides: one that finds a production account, or one that fails, stops the write routes', async () => {
+  let session: () => unknown = () => ({ account: { id: 'a1', name: 'Acme', slug: 'acme', is_sandbox: false, kind: 'company' }, user_email: '' });
+  const writes: string[] = [];
+  const api = (async (method: string, path: string) => {
+    if (path === '/me/session/') return session();
+    if (path === '/me/authorization/') return { actions: {} };
+    writes.push(`${method} ${path}`);
+    return { ok: true };
+  }) as Api;
+  const { app, state } = appWith(api, fileLikeState(sandboxState()));
+  const press = async (path: string) => (await app.request(path, { method: 'POST' })).text();
+  await press('/steps/key');
+  assert.equal(state.load().account?.is_sandbox, false, 'the same key now reaches a production account');
+  assert.ok((await press('/reset')).includes('the key belongs to a production account'), 'refused from then on');
+  session = () => { throw new AbillioError(401, { error: { code: 'unauthorized', message: 'Unauthorized' } }, ''); };
+  await press('/steps/key');
+  assert.equal(state.load().account, null, 'a failed check forgets the account');
+  assert.ok((await press('/reset')).includes('Check the key first (step 1)'));
+  assert.deepEqual(writes, [], 'nothing was written to Abillio');
 });

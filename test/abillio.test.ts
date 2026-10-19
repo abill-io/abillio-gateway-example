@@ -182,6 +182,8 @@ test('redactForTrace masks each key the page never types, in a request as in a r
     // The spellings of the client row on GET /accounts/clients/.
     'accounting_email', 'contact_person', 'address_formatted', 'address_street', 'address_apartment', 'address_city', 'address_state', 'address_postal_code',
     'address_district', 'address_parish', 'address_village', 'address_coordinates', 'pasts_lv_address_id',
+    // E-mail lists on the invoices the sample's own calls return.
+    'paid_copy_emails', 'recipient_email',
   ];
   const real = Object.fromEntries(never.map(key => [key, `real ${key}`]));
   const hidden = Object.fromEntries(never.map(key => [key, '[redacted]']));

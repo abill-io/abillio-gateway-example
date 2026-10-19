@@ -17,7 +17,7 @@ test('a missing file reads as the default state', () => {
 test('save then load round-trips, and the file is pretty JSON', () => {
   const file = tempFile();
   const state = defaultState();
-  state.account = { id: 'a1', name: 'Acme', slug: 'acme', is_sandbox: true };
+  state.account = { id: 'a1', name: 'Acme', slug: 'acme', is_sandbox: true, key_id: 'key_1', env_account: '' };
   saveState(state, file);
   assert.deepEqual(loadState(file), state);
   assert.match(readFileSync(file, 'utf8'), /\n  "account": \{/);

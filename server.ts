@@ -37,6 +37,10 @@ export type Deps = {
   pollIntervalMs: number | null;
   // ALLOW_PRODUCTION=1: the write routes may act on a production account.
   allowProduction: boolean;
+  // The key and ABILLIO_ACCOUNT this process signs with (from loadEnv): a
+  // stored key check counts only for the same two.
+  keyId: string;
+  account: string;
 };
 
 export function createApp(deps: Deps): Hono {
@@ -57,12 +61,14 @@ export function createApp(deps: Deps): Hono {
   // the poller (both Task 9) end up here.
   const notifyStored = () => { deps.onStored(); for (const fn of refreshListeners) fn(); };
   // What a page or /api/state may show of the state: everything except the
-  // webhook signing secret, connected or still pending. On the hosted copy
-  // every visitor sees this page, and the secret is what lets someone forge a
-  // delivery.
+  // webhook signing secret, connected or still pending, and the API key id
+  // the key check was made with. On the hosted copy every visitor sees this
+  // page; the secret is what lets someone forge a delivery, and the key id is
+  // the credential's name, kept out of sight like the rest of .env.
   const mask = (secret: string) => '…' + secret.slice(-4);
   const publicState = (s: State): State => ({
     ...s,
+    account: s.account && { ...s.account, key_id: mask(s.account.key_id ?? '') },
     webhook: s.webhook && { ...s.webhook, secret: mask(s.webhook.secret) },
     webhook_request: s.webhook_request && { ...s.webhook_request, secret: mask(s.webhook_request.secret) },
   });
@@ -112,11 +118,15 @@ export function createApp(deps: Deps): Hono {
   // Every route that writes to Abillio runs only against a sandbox account.
   // The sample mints links, invoices and payments with whatever key it is
   // given, and a key pasted from production would make them real. The key
-  // check stores which kind of account the key reaches; until it has, nothing
-  // is sent. ALLOW_PRODUCTION=1 is the way past for a partner who means it.
+  // check stores which kind of account the key reaches, with the key and the
+  // ABILLIO_ACCOUNT it was made with; a check made with others says nothing
+  // about the account reached now, so it counts as no check, and until there
+  // is one nothing is sent. ALLOW_PRODUCTION=1 is the way past for a partner
+  // who means it.
   const sandboxRefusal = (): string | null => {
     if (deps.allowProduction) return null;
-    const account = deps.state.load().account;
+    const stored = deps.state.load().account;
+    const account = stored && stored.key_id === deps.keyId && stored.env_account === deps.account ? stored : null;
     if (account?.is_sandbox === true) return null;
     return account?.is_sandbox === false
       ? 'This back office runs against sandbox accounts only (the key belongs to a production account).'
@@ -142,9 +152,13 @@ export function createApp(deps: Deps): Hono {
     try {
       lastKey = await checkKey(deps.api);
       const { id, name, slug, is_sandbox } = lastKey.account;
-      deps.state.update(s => { s.account = { id, name, slug, is_sandbox: is_sandbox === true }; });
+      deps.state.update(s => { s.account = { id, name, slug, is_sandbox: is_sandbox === true, key_id: deps.keyId, env_account: deps.account }; });
       return render(c);
     } catch (err) {
+      // A check that fails leaves nothing known about the account the key
+      // reaches, so an earlier answer is forgotten with it.
+      lastKey = null;
+      deps.state.update(s => { s.account = null; });
       return render(c, err);
     }
   });
@@ -398,18 +412,19 @@ export function createApp(deps: Deps): Hono {
     } catch (err) {
       return render(c, err);
     }
-    // The webhook channel and subscription are the account's, not demo data,
-    // so they outlive the reset and are kept, with a request still pending
-    // from a connect that stopped mid-way and the keys it went out under:
-    // re-sent under a new key, that request would create a second channel or
-    // subscription. Everything else starts over.
+    // The account belongs to the key, not to the walk, so it stays, and the
+    // next walk needs no new key check. The webhook channel and subscription
+    // are the account's, not demo data, so they outlive the reset and are
+    // kept, with a request still pending from a connect that stopped mid-way
+    // and the keys it went out under: re-sent under a new key, that request
+    // would create a second channel or subscription. Everything else starts
+    // over.
     deps.state.update(s => {
       const idempotency: Record<string, string> = {};
       for (const action of Object.values(WEBHOOK_ACTIONS)) if (s.idempotency[action]) idempotency[action] = s.idempotency[action];
-      const keep = { webhook: s.webhook, webhook_request: s.webhook_request, idempotency };
+      const keep = { account: s.account, webhook: s.webhook, webhook_request: s.webhook_request, idempotency };
       Object.assign(s, defaultState(), keep);
     });
-    lastKey = null;
     return c.redirect('/', 302);
   });
 
@@ -432,6 +447,8 @@ export function main(): void {
     now: Date.now,
     pollIntervalMs: env.publicUrl ? null : 5000,
     allowProduction: env.allowProduction,
+    keyId: env.keyId,
+    account: env.account,
   });
   serve({ fetch: app.fetch, port: env.port }, info => {
     console.log(`Abillio gateway example on http://localhost:${info.port}` + (env.publicUrl ? ` (public: ${env.publicUrl})` : ' (no PUBLIC_URL: webhooks off, polling on)'));

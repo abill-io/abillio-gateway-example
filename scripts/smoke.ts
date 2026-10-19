@@ -3,6 +3,8 @@
 // the first error so it can gate a release. The state lives in memory only:
 // every run mints its own keys, so it is a new invoice and a new payment each
 // time, and data/state.json is never touched.
+import { realpathSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
 import { AbillioError, createApi, type Api } from '../lib/abillio.ts';
 import { loadEnv } from '../lib/env.ts';
 import { defaultState } from '../lib/store.ts';
@@ -14,8 +16,8 @@ import { DEFAULT_COMPANY, findPayout, fundWallet, payInvoice, readPayout, simula
 export type SmokeOptions = { returnUrl: string; engagementId: string | null; company: string; log: (line: string) => void };
 
 // An engagement of another account, or one that does not exist, is refused
-// with a 404 or a 403 on the first call that names it, the draft, where the
-// client's generic hint would blame the key's permissions.
+// with a 404 or a 403 on the first call that names it, the draft. A 403 can
+// also be the key lacking the action, so its own hint stays beside this one.
 export const WRONG_ENGAGEMENT = 'check SMOKE_ENGAGEMENT_ID: the engagement must belong to this account';
 
 export async function runSmoke(api: Api, opts: SmokeOptions): Promise<void> {
@@ -34,7 +36,7 @@ export async function runSmoke(api: Api, opts: SmokeOptions): Promise<void> {
   const self = await findSelfClient(api, key.account.id);
   const request = invoiceRequest(engagementId, { description: 'Smoke test', unit_price: '10.00', currency_code: 'EUR' }, new Date());
   const draft = await draftInvoice(api, state, request, self.id).catch((err: unknown) => {
-    if (err instanceof AbillioError && (err.status === 403 || err.status === 404)) err.hint = WRONG_ENGAGEMENT;
+    if (err instanceof AbillioError && (err.status === 403 || err.status === 404)) err.hint = [err.hint, WRONG_ENGAGEMENT].filter(Boolean).join('\n');
     throw err;
   });
   const issued = await issueInvoice(api, state, engagementId, draft.id);
@@ -64,15 +66,27 @@ export function describeError(err: unknown): string[] {
     return [
       `${err.status} ${err.code}: ${err.message}`,
       ...err.blockers.map(blocker => `  blocker ${blocker.code}: ${blocker.message}`),
-      ...(err.hint ? [err.hint] : []),
+      ...(err.hint ? err.hint.split('\n') : []),
       ...(err.requestId ? [`request_id ${err.requestId}`] : []),
     ];
   }
   const lines = [err instanceof Error ? err.message : String(err)];
   for (let cause = err instanceof Error ? err.cause : undefined; cause !== undefined; cause = cause instanceof Error ? cause.cause : undefined) {
-    lines.push(`  cause: ${cause instanceof Error ? cause.message : String(cause)}`);
+    lines.push(`  cause: ${causeText(cause)}`);
   }
   return lines;
+}
+
+// A cause in its own words. A refused or unreachable host reaches fetch() as
+// an AggregateError with no message, one error per address it tried, so its
+// code and those errors are what say why.
+function causeText(cause: unknown): string {
+  if (!(cause instanceof Error)) return String(cause);
+  const code = (cause as { code?: unknown }).code;
+  const text = cause.message || (typeof code === 'string' ? code : '');
+  const tried = cause instanceof AggregateError ? cause.errors.map(e => (e instanceof Error ? e.message : String(e))).join('; ') : '';
+  if (text && tried) return `${text} (${tried})`;
+  return text || tried || cause.name;
 }
 
 async function main(): Promise<void> {
@@ -90,4 +104,22 @@ async function main(): Promise<void> {
   }
 }
 
-if (process.argv[1] && import.meta.url === new URL(`file://${process.argv[1]}`).href) await main();
+// Whether node was started with this file. Real paths on both sides: started
+// through a symlink, node resolves the module to its real path but leaves
+// argv as typed, and a string comparison would skip main() and exit 0.
+function startedAsScript(): boolean {
+  if (!process.argv[1]) return false;
+  try {
+    return realpathSync(process.argv[1]) === realpathSync(fileURLToPath(import.meta.url));
+  } catch {
+    return false;
+  }
+}
+
+if (startedAsScript()) {
+  await main();
+} else if (process.env.npm_lifecycle_event === 'smoke') {
+  // `npm run smoke` that never reached main() must not pass a release gate.
+  console.error('scripts/smoke.ts did not recognise itself as the script node started, so nothing ran.');
+  process.exitCode = 1;
+}
