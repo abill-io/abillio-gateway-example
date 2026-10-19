@@ -131,6 +131,21 @@ test('/join writes back only its own key, so a key another press stored meanwhil
   assert.equal(state.load().idempotency['draft:e9'], 'another-press');
 });
 
+test('a changed /join form is a new attempt: the key follows the exact body, so only an identical retry replays', async () => {
+  const keys: string[] = [];
+  const api = (async (_m: string, _p: string, _b: unknown, opts?: { idempotencyKey?: string }) => {
+    keys.push(opts?.idempotencyKey ?? '');
+    return { session_id: 's1', url: 'https://new.abillio.dev/s/tok', status: 'awaiting_freelancer', purpose: 'onboarding' };
+  }) as Api;
+  const { app } = appWith(api, fileLikeState());
+  const join = (locale: string) => app.request('/join', { method: 'POST', body: new URLSearchParams({ first_name: 'Anna', last_name: 'Ozola', email: 'anna@example.com', tax_country: 'LV', locale }), headers: { 'content-type': 'application/x-www-form-urlencoded' } });
+  await join('lv');
+  await join('lv');
+  await join('en');
+  assert.equal(keys[1], keys[0], 'the same form: the same body under the same key');
+  assert.notEqual(keys[2], keys[1], 'another locale: another body, so a new attempt with a new key');
+});
+
 // --- Step 3 -------------------------------------------------------------------
 
 type App = ReturnType<typeof appWith>['app'];
@@ -180,6 +195,59 @@ function pressIssue(app: App, form: Record<string, string> = { description: 'Tut
   return app.request('/steps/issue', { method: 'POST', body: new URLSearchParams(form), headers: { 'content-type': 'application/x-www-form-urlencoded' } });
 }
 
+test('re-joining with the same e-mail keeps steps 3 and 4; a different engagement found later starts them over', async () => {
+  const sessionFor: Record<string, string> = { 'anna@example.com': 's2', 'ben@example.com': 's3' };
+  const api = (async (method: string, path: string, body: unknown) => {
+    if (method === 'POST' && path === '/onboarding/sessions/') {
+      const id = sessionFor[(body as { email: string }).email.toLowerCase()];
+      return { session_id: id, url: `https://new.abillio.dev/s/${id}`, status: 'awaiting_freelancer', purpose: 'onboarding' };
+    }
+    if (method === 'GET' && path.startsWith('/onboarding/sessions/')) return { state: 'in_progress', can_be_paid: false, purpose: 'onboarding', requirements: [] };
+    if (method === 'GET' && path === '/engagements/?search=ben%40example.com') return { count: 1, items: [{ id: 'e2', status: 'invited', counterparty: { email: 'ben@example.com', servicing_company: { slug: 'abillio-ks' } }, compliance: { can_be_paid: false } }] };
+    throw new Error(`unexpected ${method} ${path}`);
+  }) as Api;
+  const initial = joinedState();
+  initial.invoice = { id: 'inv-1', number: 'INV-1', status: 'pending', public_url: 'https://new.abillio.dev/invoice/inv-1' };
+  initial.invoice_request = { engagement_id: 'e1', description: 'Tutoring, October', unit_price: '100.00', currency_code: 'EUR', issued_date: '2026-10-19', due_date: '2026-11-02' };
+  initial.payout = { id: 'p1', status: 'pending' };
+  const { app, state } = appWith(api, fileLikeState(initial));
+  const join = (email: string) => app.request('/join', { method: 'POST', body: new URLSearchParams({ first_name: 'Anna', last_name: 'Ozola', email, tax_country: 'LV', locale: 'lv' }), headers: { 'content-type': 'application/x-www-form-urlencoded' } });
+  const steps34 = () => { const s = state.load(); return { invoice: s.invoice, invoice_request: s.invoice_request, payout: s.payout }; };
+  const before = steps34();
+  assert.equal((await join('Anna@Example.com')).status, 200);
+  await app.request('/join/status');
+  assert.equal(state.load().freelancer?.session_id, 's2', 'a new session for the same freelancer');
+  assert.equal(state.load().freelancer?.engagement_id, 'e1', 'on the same engagement');
+  assert.deepEqual(steps34(), before, 'steps 3 and 4 stay as they were');
+  assert.equal((await join('ben@example.com')).status, 200);
+  await app.request('/join/status');
+  assert.equal(state.load().freelancer?.engagement_id, 'e2');
+  assert.deepEqual(steps34(), { invoice: null, invoice_request: null, payout: null }, 'another engagement starts steps 3 and 4 over');
+});
+
+test('with nothing pending, an empty description or unit price is refused before any call', async () => {
+  const abillio = fakeIssueApi();
+  const { app, state } = appWith(abillio.api, fileLikeState(joinedState()));
+  const forms: Record<string, string>[] = [{ description: ' ', unit_price: '100.00', currency_code: 'EUR' }, { description: 'Tutoring', unit_price: '', currency_code: 'EUR' }, {}];
+  for (const form of forms) {
+    assert.ok((await (await pressIssue(app, form)).text()).includes('Fill in the description and the unit price'), JSON.stringify(form));
+  }
+  assert.equal(abillio.calls.length, 0);
+  assert.equal(state.load().invoice_request, null);
+});
+
+test("a stored request for another engagement is not re-sent: the press drafts the joined freelancer's form", async () => {
+  const abillio = fakeIssueApi();
+  const initial = joinedState();
+  initial.invoice_request = { engagement_id: 'e0', description: 'The previous freelancer', unit_price: '10.00', currency_code: 'EUR', issued_date: '2026-10-01', due_date: '2026-10-15' };
+  const { app, state } = appWith(abillio.api, fileLikeState(initial));
+  await pressIssue(app);
+  const drafts = abillio.drafts();
+  assert.equal(drafts.length, 1, 'drafted on e1, not on the stale request\'s e0');
+  assert.equal((drafts[0].body as { items: { description: string }[] }).items[0].description, 'Tutoring, October');
+  assert.equal(state.load().invoice_request?.engagement_id, 'e1');
+});
+
 test('POST /steps/issue drafts and issues in one go and shows a 409 as blockers', async () => {
   const abillio = fakeIssueApi(call => { if (call.path.endsWith('/issue')) throw kycMissing(); });
   const { app, state } = appWith(abillio.api, memoryState(joinedState()));
@@ -211,13 +279,16 @@ test('one draft per engagement: after a 409 the next press issues the stored dra
 });
 
 test('after a failed keyed call the next press keeps the key while the outcome is unknown, re-sending the stored request byte for byte', async () => {
-  const cases: { name: string; call: 'draft' | 'issue'; failure: () => Error; kept: boolean }[] = [
-    { name: 'network failure on the draft', call: 'draft', failure: () => new TypeError('fetch failed'), kept: true },
-    { name: 'bare 409 on the draft', call: 'draft', failure: () => new AbillioError(409, { detail: 'A request with this idempotency key is still in progress.' }, ''), kept: true },
-    { name: '503 on the issue', call: 'issue', failure: () => new AbillioError(503, null, 'upstream unavailable'), kept: true },
-    { name: 'enveloped 422 on the draft', call: 'draft', failure: () => new AbillioError(422, { error: { code: 'validation_failed', message: 'Validation failed' } }, ''), kept: false },
+  const edited = { description: 'Edited', unit_price: '90.00', currency_code: 'EUR' };
+  // `retry` is the second press's form: an edited one, or none at all, which
+  // is what the Retry button sends (its fields sit in a disabled fieldset).
+  const cases: { name: string; call: 'draft' | 'issue'; failure: () => Error; kept: boolean; retry: Record<string, string> }[] = [
+    { name: 'network failure on the draft', call: 'draft', failure: () => new TypeError('fetch failed'), kept: true, retry: edited },
+    { name: 'bare 409 on the draft', call: 'draft', failure: () => new AbillioError(409, { detail: 'A request with this idempotency key is still in progress.' }, ''), kept: true, retry: {} },
+    { name: '503 on the issue', call: 'issue', failure: () => new AbillioError(503, null, 'upstream unavailable'), kept: true, retry: edited },
+    { name: 'enveloped 422 on the draft', call: 'draft', failure: () => new AbillioError(422, { error: { code: 'validation_failed', message: 'Validation failed' } }, ''), kept: false, retry: edited },
   ];
-  for (const { name, call, failure, kept } of cases) {
+  for (const { name, call, failure, kept, retry } of cases) {
     let failed = false;
     const abillio = fakeIssueApi(c => {
       const isTheCall = c.method === 'POST' && (call === 'issue' ? c.path.endsWith('/issue') : c.path === '/engagements/e1/invoices/');
@@ -226,9 +297,9 @@ test('after a failed keyed call the next press keeps the key while the outcome i
     let now = Date.parse('2026-10-19T10:00:00Z');
     const { app, state } = appWith(abillio.api, fileLikeState(joinedState()), null, () => {}, () => now);
     await pressIssue(app);
-    // The retry comes a day later, with the form edited.
+    // The retry comes a day later.
     now += 86_400_000;
-    await pressIssue(app, { description: 'Edited', unit_price: '90.00', currency_code: 'EUR' });
+    await pressIssue(app, retry);
     const tried = call === 'issue' ? abillio.issues() : abillio.drafts();
     assert.equal(tried.length, 2, name);
     if (kept) {
@@ -254,22 +325,45 @@ test('a refused GET of the clients touches no stored key: Abillio saw no keyed c
   assert.equal(abillio.calls.filter(c => c.method === 'POST').length, 0);
 });
 
-test('two overlapping presses send the same key: the first claims it in the store before its call goes out', async () => {
-  let release = () => {};
-  const held = new Promise<void>(resolve => { release = resolve; });
-  let sent = () => {};
-  const firstDraftSent = new Promise<void>(resolve => { sent = resolve; });
-  const abillio = fakeIssueApi(async call => {
-    if (call.path === '/engagements/e1/invoices/' && abillio.drafts().length === 1) { sent(); await held; }
+test('two overlapping presses send one request under one key, whichever got further first', async () => {
+  // The first press is held at its draft call (it has stored its request and
+  // claimed the key) or at the clients read (it has stored nothing yet); the
+  // second press, with another form, runs to the end meanwhile.
+  for (const holdAt of ['draft', 'clients read'] as const) {
+    let release = () => {};
+    const held = new Promise<void>(resolve => { release = resolve; });
+    let reached = () => {};
+    const firstHeld = new Promise<void>(resolve => { reached = resolve; });
+    let seen = 0;
+    const abillio = fakeIssueApi(async call => {
+      const isHeldCall = holdAt === 'draft' ? call.method === 'POST' && call.path === '/engagements/e1/invoices/' : call.method === 'GET';
+      if (isHeldCall && ++seen === 1) { reached(); await held; }
+    });
+    const { app, state } = appWith(abillio.api, fileLikeState(joinedState()));
+    const first = pressIssue(app);
+    await firstHeld;
+    await pressIssue(app, { description: 'Edited', unit_price: '90.00', currency_code: 'EUR' });
+    release();
+    await first;
+    const drafts = abillio.drafts();
+    assert.equal(drafts.length, 2, holdAt);
+    assert.equal(drafts[1].key, drafts[0].key, `${holdAt}: the key claimed first serves both presses`);
+    assert.deepEqual(drafts[1].body, drafts[0].body, `${holdAt}: and so does the request stored first`);
+    assert.deepEqual({ id: state.load().invoice?.id, status: state.load().invoice?.status }, { id: 'inv-1', status: 'pending' }, holdAt);
+  }
+});
+
+test('a refusal forgets only the key its own call sent: a key and a request another press stored meanwhile stay', async () => {
+  const store = fileLikeState(joinedState());
+  const theirs = { engagement_id: 'e1', description: 'Their press', unit_price: '50.00', currency_code: 'EUR', issued_date: '2026-10-19', due_date: '2026-11-02' };
+  const abillio = fakeIssueApi(call => {
+    if (call.method !== 'POST') return;
+    // While this call is out, another press claims the action afresh and stores its own request.
+    store.update(s => { s.idempotency['draft:e1'] = 'their-key'; s.invoice_request = theirs; });
+    throw new AbillioError(422, { error: { code: 'validation_failed', message: 'Validation failed' } }, '');
   });
-  const { app, state } = appWith(abillio.api, fileLikeState(joinedState()));
-  const first = pressIssue(app);
-  await firstDraftSent;
+  const { app, state } = appWith(abillio.api, store);
   await pressIssue(app);
-  release();
-  await first;
-  const keys = abillio.drafts().map(c => c.key);
-  assert.equal(keys.length, 2);
-  assert.equal(keys[1], keys[0], 'the second press found the key the first one claimed, so Abillio holds both to one draft');
-  assert.equal(state.load().invoice?.id, 'inv-1');
+  assert.equal(state.load().idempotency['draft:e1'], 'their-key');
+  assert.deepEqual(state.load().invoice_request, theirs);
 });

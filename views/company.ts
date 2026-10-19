@@ -55,7 +55,7 @@ export function issuePanel(state: State): string {
   } else if (request && stage === 'pending') {
     body = `<form method="post" action="/steps/issue">
       <fieldset disabled>${issueFields(request)}</fieldset>
-      <p class="muted">The last attempt did not answer; pressing again re-sends the same request under the same key.</p>
+      <p class="muted">The last attempt's outcome is unknown (no answer, a server error, or Abillio still holds it); pressing again re-sends the same request under the same key.</p>
       ${button('Retry')}
     </form>`;
   } else {

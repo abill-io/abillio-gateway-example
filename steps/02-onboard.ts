@@ -2,10 +2,12 @@
 // mints an onboarding session, opens Abillio's link in a popup and then asks
 // the session where things stand. The engagement is looked up by the e-mail
 // the link was minted for: the session answer carries no engagement id.
+import { createHash } from 'node:crypto';
 import type { Api } from '../lib/abillio.ts';
 import { idempotencyKeyFor, type State } from '../lib/store.ts';
 
 export type JoinForm = { first_name: string; last_name: string; email: string; tax_country: string; locale: 'lv' | 'en' };
+export type OnboardingBody = { email: string; locale: 'lv' | 'en'; return_url: string; prefill: { first_name: string; last_name: string; tax_country: string } };
 
 export type SessionStatus = {
   state: 'awaiting_freelancer' | 'in_progress' | 'complete' | 'expired';
@@ -21,18 +23,29 @@ export function returnUrlFor(publicUrl: string | null, port: number): string {
   return `${publicUrl ?? `http://localhost:${port}`}/back`;
 }
 
+// What POST /onboarding/sessions/ sends for this form.
+export function onboardingBody(form: JoinForm, returnUrl: string): OnboardingBody {
+  return {
+    email: form.email,
+    locale: form.locale,
+    return_url: returnUrl,
+    prefill: { first_name: form.first_name, last_name: form.last_name, tax_country: form.tax_country },
+  };
+}
+
+// The action a mint is keyed on: the address plus a digest of the exact body.
+// Abillio holds a key to the body it first saw, and a different body under it
+// is a 409 for good; with the digest a changed form is a new attempt, and only
+// an identical retry replays. The route's keyed() and startOnboarding both
+// derive it here, so the key they claim and send cannot drift apart.
+export function onboardingAction(body: OnboardingBody): string {
+  const digest = createHash('sha256').update(JSON.stringify(body)).digest('hex').slice(0, 8);
+  return `onboard:${body.email.toLowerCase()}:${digest}`;
+}
+
 export async function startOnboarding(api: Api, state: State, form: JoinForm, returnUrl: string): Promise<{ session_id: string; url: string; origin: string }> {
-  const session = await api<SessionOut>(
-    'POST',
-    '/onboarding/sessions/',
-    {
-      email: form.email,
-      locale: form.locale,
-      return_url: returnUrl,
-      prefill: { first_name: form.first_name, last_name: form.last_name, tax_country: form.tax_country },
-    },
-    { idempotencyKey: idempotencyKeyFor(state, `onboard:${form.email.toLowerCase()}`) },
-  );
+  const body = onboardingBody(form, returnUrl);
+  const session = await api<SessionOut>('POST', '/onboarding/sessions/', body, { idempotencyKey: idempotencyKeyFor(state, onboardingAction(body)) });
   return { session_id: session.session_id, url: session.url, origin: new URL(session.url).origin };
 }
 

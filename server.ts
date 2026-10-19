@@ -11,7 +11,7 @@ import { loadEnv } from './lib/env.ts';
 import { forgetIdempotencyKey, loadState, updateState, type State } from './lib/store.ts';
 import { Trace, trace as processTrace } from './lib/trace.ts';
 import { checkKey, type KeyReport } from './steps/01-key.ts';
-import { findEngagement, readSession, returnUrlFor, startOnboarding } from './steps/02-onboard.ts';
+import { findEngagement, onboardingAction, onboardingBody, readSession, returnUrlFor, startOnboarding, type JoinForm } from './steps/02-onboard.ts';
 import { draftInvoice, findSelfClient, invoiceRequest, issueInvoice, pendingRequest } from './steps/03-issue.ts';
 import { companyPage } from './views/company.ts';
 import { joinPage } from './views/join.ts';
@@ -57,15 +57,23 @@ export function createApp(deps: Deps): Hono {
   // its idempotency layer, a 5xx or a network failure leave the outcome
   // unknown, and the key stays, so the next press replays. Only this action's
   // key is written, never the whole map: another tab (or, on the hosted copy,
-  // another visitor) may have stored keys meanwhile.
-  async function keyed<T>(state: State, action: string, call: () => Promise<T>): Promise<T> {
-    deps.state.update(s => { state.idempotency[action] = s.idempotency[action] ??= randomUUID(); });
+  // another visitor) may have stored keys meanwhile. The forget, and whatever
+  // `onRefused` clears with it in the same write, happens only while the
+  // stored key is still the one this call sent: a newer one, and what came
+  // with it, belong to another press.
+  async function keyed<T>(state: State, action: string, call: () => Promise<T>, onRefused: (s: State) => void = () => {}): Promise<T> {
+    let claimed = '';
+    deps.state.update(s => { claimed = state.idempotency[action] = s.idempotency[action] ??= randomUUID(); });
     try {
       return await call();
     } catch (err) {
       if (err instanceof AbillioError && err.verified) {
         forgetIdempotencyKey(state, action);
-        deps.state.update(s => { delete s.idempotency[action]; });
+        deps.state.update(s => {
+          if (s.idempotency[action] !== claimed) return;
+          delete s.idempotency[action];
+          onRefused(s);
+        });
       }
       throw err;
     }
@@ -93,12 +101,19 @@ export function createApp(deps: Deps): Hono {
     if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(form.email ?? '')) return c.text('e-mail looks wrong', 422);
     const locale = form.locale === 'en' ? 'en' : 'lv';
     const state = deps.state.load();
+    const join: JoinForm = { first_name: form.first_name ?? '', last_name: form.last_name ?? '', email: form.email, tax_country: form.tax_country || 'LV', locale };
+    const returnUrl = returnUrlFor(deps.publicUrl, deps.port);
     try {
-      // keyed() claims and keeps the action's key; startOnboarding sends it.
-      const session = await keyed(state, `onboard:${form.email.toLowerCase()}`, () =>
-        startOnboarding(deps.api, state, { first_name: form.first_name ?? '', last_name: form.last_name ?? '', email: form.email, tax_country: form.tax_country || 'LV', locale }, returnUrlFor(deps.publicUrl, deps.port)));
-      // A new session: what was stored for the previous freelancer goes.
-      deps.state.update(s => { s.freelancer = { email: form.email, session_id: session.session_id, session_url: session.url, engagement_id: null, servicing_company_slug: null }; s.invoice = null; s.invoice_request = null; s.payout = null; });
+      // keyed() claims and keeps the key of this exact body (onboardingAction);
+      // startOnboarding derives the same action and sends that key.
+      const session = await keyed(state, onboardingAction(onboardingBody(join, returnUrl)), () => startOnboarding(deps.api, state, join, returnUrl));
+      // The same freelancer (the same address) keeps their engagement, and with
+      // it steps 3 and 4. Another one's engagement is looked up by /join/status,
+      // which starts those steps over once it finds a different one.
+      deps.state.update(s => {
+        const previous = s.freelancer?.email.toLowerCase() === form.email.toLowerCase() ? s.freelancer : null;
+        s.freelancer = { email: form.email, session_id: session.session_id, session_url: session.url, engagement_id: previous?.engagement_id ?? null, servicing_company_slug: previous?.servicing_company_slug ?? null };
+      });
       return c.json(session);
     } catch (err) {
       return c.text(err instanceof AbillioError ? `${err.code}: ${err.message}` : String(err), 502);
@@ -118,7 +133,14 @@ export function createApp(deps: Deps): Hono {
         const engagement = await findEngagement(deps.api, f.email);
         if (engagement) {
           engagementId = engagement.id;
-          deps.state.update(s => { if (s.freelancer) { s.freelancer.engagement_id = engagement.id; s.freelancer.servicing_company_slug = engagement.servicing_company_slug; } });
+          deps.state.update(s => {
+            // Only for the session this poll read: a newer join replaced it.
+            if (!s.freelancer || s.freelancer.session_id !== f.session_id) return;
+            // Steps 3 and 4 belong to one engagement; another one starts them over.
+            if (s.freelancer.engagement_id !== engagement.id) { s.invoice = null; s.invoice_request = null; s.payout = null; }
+            s.freelancer.engagement_id = engagement.id;
+            s.freelancer.servicing_company_slug = engagement.servicing_company_slug;
+          });
         }
       }
       return c.json({ ...status, engagement_id: engagementId });
@@ -138,18 +160,22 @@ export function createApp(deps: Deps): Hono {
       // issued one, the press only (re)sends the issue call.
       let invoice = state.invoice;
       if (!invoice) {
+        // With nothing pending the form is the request, so it has to be filled in.
+        if (!pendingRequest(state) && (!(form.description ?? '').trim() || !(form.unit_price ?? '').trim())) {
+          return render(c, new Error('Fill in the description and the unit price.'));
+        }
         // The unkeyed read goes first and outside keyed(): its failure says
         // nothing about any key.
         const self = await findSelfClient(deps.api, state.account.id);
-        // A stored request is re-sent as it is, and the form is then ignored:
-        // the bytes under its kept key must not change with the day or the form.
-        const request = pendingRequest(state) ?? invoiceRequest(engagementId, { description: form.description ?? '', unit_price: form.unit_price ?? '', currency_code: form.currency_code || 'EUR' }, new Date(deps.now()));
-        deps.state.update(s => { s.invoice_request = request; });
-        const drafted = await keyed(state, `draft:${engagementId}`, () => draftInvoice(deps.api, state, request, self.id)).catch((err: unknown) => {
-          // Refused for certain: nothing was drafted, so the form is free again.
-          if (err instanceof AbillioError && err.verified) deps.state.update(s => { s.invoice_request = null; });
-          throw err;
-        });
+        // Decided on what is stored, in the same write: a stored request for
+        // this engagement is re-sent as it is (the form is then ignored), even
+        // one another press stored meanwhile, so the bytes under the key never
+        // change with the day or the form.
+        const fresh = invoiceRequest(engagementId, { description: form.description ?? '', unit_price: form.unit_price ?? '', currency_code: form.currency_code || 'EUR' }, new Date(deps.now()));
+        const request = deps.state.update(s => { s.invoice_request = s.invoice_request?.engagement_id === engagementId ? s.invoice_request : fresh; }).invoice_request ?? fresh;
+        // On a certain refusal nothing was drafted, so the request goes with the
+        // key and the form is free again.
+        const drafted = await keyed(state, `draft:${request.engagement_id}`, () => draftInvoice(deps.api, state, request, self.id), s => { s.invoice_request = null; });
         invoice = { id: drafted.id, number: drafted.number, status: drafted.status, public_url: drafted.public_url };
         const stored = invoice;
         // Another press may have stored this draft, and issued it, meanwhile.

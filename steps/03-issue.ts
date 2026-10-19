@@ -62,8 +62,8 @@ export async function findSelfClient(api: Api, accountId: string): Promise<{ id:
   return { id: self.id, name: self.name };
 }
 
-// The body is built from the stored request alone, so the same request always
-// sends the same bytes.
+// The body is the stored request plus the self-client id, which is read on
+// each press; the same request therefore sends the same bytes.
 export async function draftInvoice(api: Api, state: State, request: InvoiceRequest, selfClientId: string): Promise<InvoiceSummary> {
   const out = await api<InvoiceOut>(
     'POST',
