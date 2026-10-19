@@ -72,7 +72,7 @@ test('a non-2xx answer becomes an AbillioError carrying the envelope, and 401 ca
   const trace = new Trace();
   const envelope = { error: { code: 'kyc_missing', message: 'Identity not verified', field_errors: null, capability: 'send_invoice', blockers: [{ code: 'kyc_missing', message: 'Identity not verified', capability: 'send_invoice' }], request_id: 'req-9' } };
   const api = createApi(env, { fetchImpl: fakeFetch(() => new Response(JSON.stringify(envelope), { status: 409 })), trace });
-  await assert.rejects(api('POST', '/x'), (err: AbillioError) => {
+  await assert.rejects(api('POST', '/x', undefined, { idempotencyKey: 'idem-3' }), (err: AbillioError) => {
     assert.equal(err.status, 409);
     assert.equal(err.code, 'kyc_missing');
     assert.equal(err.blockers[0].code, 'kyc_missing');
@@ -97,4 +97,87 @@ test('the trace keeps the request and response but never the signature, and mark
   assert.equal(entry.idempotencyKey, 'idem-2');
   assert.deepEqual(entry.requestBody, { invoice_uuid: 'inv-1' });
   assert.ok(!JSON.stringify(entry).includes(vectors.seed_hex));
+});
+
+function answering(status: number, body: unknown) {
+  return createApi(env, { fetchImpl: fakeFetch(() => new Response(JSON.stringify(body), { status })), trace: new Trace() });
+}
+
+test('field_errors as a map (a domain validation, 400) becomes field -> [message]', async () => {
+  const api = answering(400, { error: { code: 'validation_failed', message: 'Validation failed.', field_errors: { secret: 'Secret must be 32 to 128 characters.', url: 'Enter a valid URL.' }, request_id: 'req-2' } });
+  await assert.rejects(api('GET', '/x'), (err: AbillioError) => {
+    assert.deepEqual(err.fieldErrors, { secret: ['Secret must be 32 to 128 characters.'], url: ['Enter a valid URL.'] });
+    return true;
+  });
+});
+
+test('field_errors as a list of {path, message, code} (a schema validation, 422) is grouped by path', async () => {
+  const api = answering(422, {
+    error: {
+      code: 'validation_failed',
+      message: 'Validation failed',
+      field_errors: [
+        { path: 'email', message: 'value is not a valid email address', code: 'value_error' },
+        { path: 'items.0.amount', message: 'Input should be a valid decimal', code: 'decimal_parsing' },
+        { path: 'email', message: 'Field required', code: 'missing' },
+        { path: '_root', message: 'Value error, name a client or a freelancer', code: 'value_error' },
+      ],
+    },
+  });
+  await assert.rejects(api('GET', '/x'), (err: AbillioError) => {
+    assert.equal(err.status, 422);
+    assert.deepEqual(err.fieldErrors, {
+      email: ['value is not a valid email address', 'Field required'],
+      'items.0.amount': ['Input should be a valid decimal'],
+      _root: ['Value error, name a client or a freelancer'],
+    });
+    return true;
+  });
+});
+
+test('a list entry whose path is an array of segments is joined with dots, minus a leading body', async () => {
+  const api = answering(422, {
+    error: {
+      code: 'validation_failed',
+      message: 'Validation failed',
+      field_errors: [
+        { path: ['body', 'items', 0, 'quantity'], message: 'Input should be greater than 0', code: 'greater_than' },
+        { path: ['client', 'name'], message: 'Field required', code: 'missing' },
+        { path: ['body'], message: 'Input should be a valid dictionary', code: 'dict_type' },
+      ],
+    },
+  });
+  await assert.rejects(api('GET', '/x'), (err: AbillioError) => {
+    assert.deepEqual(err.fieldErrors, {
+      'items.0.quantity': ['Input should be greater than 0'],
+      'client.name': ['Field required'],
+      _root: ['Input should be a valid dictionary'],
+    });
+    return true;
+  });
+});
+
+test('field_errors that is null or absent reads as no field errors', async () => {
+  for (const error of [
+    { code: 'not_found', message: 'Client not found.', field_errors: null },
+    { code: 'not_found', message: 'Client not found.' },
+  ]) {
+    await assert.rejects(answering(404, { error })('GET', '/clients/c1/'), (err: AbillioError) => {
+      assert.deepEqual(err.fieldErrors, {});
+      return true;
+    });
+  }
+});
+
+test('a POST or PATCH without an Idempotency-Key is refused before anything is signed or sent', async () => {
+  let sent = 0;
+  const api = createApi(env, { fetchImpl: fakeFetch(() => { sent += 1; return new Response('{}', { status: 200 }); }), trace: new Trace() });
+  for (const method of ['POST', 'PATCH'] as const) {
+    const refusal = { message: 'Idempotency-Key is required for POST/PATCH: /clients/' };
+    await assert.rejects(api(method, '/clients/', { name: 'Acme' }), refusal);
+    await assert.rejects(api(method, '/clients/', { name: 'Acme' }, { idempotencyKey: '' }), refusal);
+  }
+  assert.equal(sent, 0);
+  await api('POST', '/clients/', { name: 'Acme' }, { idempotencyKey: 'idem-4' });
+  assert.equal(sent, 1);
 });

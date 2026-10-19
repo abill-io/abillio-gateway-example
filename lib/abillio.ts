@@ -24,10 +24,46 @@ export class AbillioError extends Error {
     this.status = status;
     this.code = typeof error.code === 'string' ? error.code : `http_${status}`;
     this.blockers = Array.isArray(error.blockers) ? (error.blockers as Blocker[]) : [];
-    this.fieldErrors = (error.field_errors ?? {}) as Record<string, string[]>;
+    this.fieldErrors = normaliseFieldErrors(error.field_errors);
     this.requestId = typeof error.request_id === 'string' ? error.request_id : null;
     this.hint = hintFor(status, this.code);
   }
+}
+
+// `error.field_errors` comes in the shapes partner guide §3 lists: a map
+// field -> message (a domain validation, 400), a list of {path, message, code}
+// (a schema validation, 422), or null. Callers get one shape: field -> messages.
+function normaliseFieldErrors(raw: unknown): Record<string, string[]> {
+  const byField = new Map<string, string[]>();
+  const add = (field: string, message: string) => byField.set(field, [...(byField.get(field) ?? []), message]);
+  if (Array.isArray(raw)) {
+    for (const entry of raw) {
+      const { path, message } = (entry ?? {}) as { path?: unknown; message?: unknown };
+      if (typeof message === 'string') add(fieldKey(path), message);
+    }
+  } else if (typeof raw === 'object' && raw !== null) {
+    for (const [field, value] of Object.entries(raw)) {
+      for (const message of Array.isArray(value) ? value : [value]) {
+        if (typeof message === 'string') add(field, message);
+      }
+    }
+  }
+  // fromEntries, not indexing: a field called "__proto__" stays an ordinary key.
+  return Object.fromEntries(byField);
+}
+
+// A schema validation's `path` arrives dotted and relative to the body
+// ("items.0.amount", or "_root" when it names no field), so a string is kept
+// as it is. Given as segments instead (a raw `loc`), they are joined with dots
+// and a leading "body", the request source, is dropped.
+function fieldKey(path: unknown): string {
+  if (typeof path === 'string') return path || '_root';
+  if (Array.isArray(path)) {
+    const segments = path.map(String);
+    if (segments[0] === 'body') segments.shift();
+    return segments.join('.') || '_root';
+  }
+  return '_root';
 }
 
 // The causes a developer meets first, said before they go looking elsewhere.
@@ -40,6 +76,7 @@ function hintFor(status: number, code: string): string | null {
   return null;
 }
 
+// POST and PATCH must pass an `idempotencyKey`; `createApi` refuses them without one.
 export type Api = <T>(
   method: 'GET' | 'POST' | 'PATCH' | 'DELETE',
   path: string,
@@ -77,6 +114,12 @@ export function createApi(
     body?: unknown,
     opts: { idempotencyKey?: string } = {},
   ): Promise<T> {
+    // The key has to come from the caller: one minted here would differ on the
+    // user's retry, and the retry is what the key is for. Abillio itself would
+    // take the call without one, so this is the only place that can refuse it.
+    if ((method === 'POST' || method === 'PATCH') && !opts.idempotencyKey) {
+      throw new Error(`Idempotency-Key is required for POST/PATCH: ${path}`);
+    }
     const url = new URL(base.pathname.replace(/\/$/, '') + path, base.origin);
     const bodyText = body === undefined ? '' : JSON.stringify(body);
     const timestamp = String(Math.floor(now() / 1000));
