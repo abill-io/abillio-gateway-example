@@ -81,17 +81,19 @@ export function createApp(deps: Deps): Hono {
   // One keyed call. The key is claimed in the store BEFORE the call, so an
   // overlapping press, a restart or a crash mid-call reuses it instead of
   // minting a second one. Afterwards only an answer Abillio itself composed —
-  // an enveloped 4xx — proves the key is spent and forgets it; a bare 409 from
-  // its idempotency layer, a 5xx or a network failure leave the outcome
-  // unknown, and the key stays, so the next press replays. Only this action's
-  // key is written, never the whole map: another tab (or, on the hosted copy,
-  // another visitor) may have stored keys meanwhile. The forget, and whatever
-  // `onRefused` clears with it in the same write, happens only while the
-  // stored key is still the one this call sent: a newer one, and what came
-  // with it, belong to another press. `once` marks an action that is an event,
-  // not a state (a sandbox simulation): after any settled answer, a success
-  // too, its key is forgotten, so the next press plays it again; only an
-  // unknown outcome keeps it, so a blind retry replays.
+  // an enveloped 4xx, but not an idempotency_* one — proves the key is spent
+  // and forgets it; an answer from its idempotency layer (bare, or an
+  // idempotency_* code: it still holds the key for an earlier attempt), a 5xx
+  // or a network failure leave the outcome unknown, and the key stays, so the
+  // next press replays. Only this action's key is written, never the whole
+  // map: another tab (or, on the hosted copy, another visitor) may have
+  // stored keys meanwhile. The forget, and whatever `onRefused` clears with it
+  // in the same write, happens only while the stored key is still the one
+  // this call sent: a newer one, and what came with it, belong to another
+  // press. `once` marks an action that is an event, not a state (a sandbox
+  // simulation): after any settled answer, a success too, its key is
+  // forgotten, so the next press plays it again; only an unknown outcome
+  // keeps it, so a blind retry replays.
   async function keyed<T>(state: State, action: string, call: () => Promise<T>, opts: KeyedOptions = {}): Promise<T> {
     let claimed = '';
     deps.state.update(s => { claimed = state.idempotency[action] = s.idempotency[action] ??= randomUUID(); });

@@ -151,12 +151,16 @@ kept, and pressing the button again replays the first answer: the trace marks it
 **Idempotent-Replay**, and no second invoice or payment exists. After a refusal
 Abillio composed itself (a 4xx in its `error` envelope) the key is forgotten,
 because Abillio keeps a spent key and would answer a retry with 409, so the next
-press is a new attempt. After an unknown outcome (a bare `{"detail": …}` 409
-from Abillio's idempotency layer, a 5xx or a network failure) the key is kept,
-and the next press replays whatever the first attempt did. For the same reason
-the request body is stored with its key (`invoice_request`, `webhook_request`):
-a retry sends exactly the same bytes, even on another day, since a different
-body under the same key is refused for good.
+press is a new attempt. An answer from Abillio's idempotency layer is not such a
+refusal: it says Abillio still holds the key for an earlier attempt, as a bare
+`{"detail": …}` from an older backend or as an `idempotency_*` code in the
+envelope (`idempotency_in_progress`, `idempotency_key_reused`,
+`idempotency_reconciliation_required`, …). After it, as after a 5xx or a network
+failure, the outcome is unknown: the key is kept, and the next press replays
+whatever the first attempt did. For the same reason the request body is stored
+with its key (`invoice_request`, `webhook_request`): a retry sends exactly the
+same bytes, even on another day, since a different body under the same key is
+refused for good.
 
 A few actions deliberately take a fresh key on every press, because each press
 is meant to run again: the sandbox deposit, the test delivery, Start over, and
@@ -166,7 +170,8 @@ state, so its key is spent on any settled answer, a success included: `paid`
 after `returned` plays again instead of replaying the first `paid`.
 
 Two cases are worth knowing before you copy the pattern. The issue call is not
-atomic: after a 5xx Abillio keeps the claim, and a retry gets a bare 409 that
+atomic: after a 5xx Abillio keeps the claim, and a retry gets a 409,
+`idempotency_reconciliation_required` (a bare answer from an older backend), that
 says the request requires reconciliation until an operator settles it, so read
 the invoice back with `GET /accounts/invoices/{id}/` rather than pressing again.
 And `pay:<invoice>` replays the first payment's success for as long as the key

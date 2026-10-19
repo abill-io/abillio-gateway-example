@@ -273,15 +273,22 @@ test('a POST or PATCH without an Idempotency-Key is refused before anything is s
   assert.equal(sent, 1);
 });
 
-test('only an enveloped answer below 500 is verified: a bare 409 from the idempotency layer and a 5xx leave the outcome unknown', async () => {
+test('only an enveloped answer below 500 is verified, and not the idempotency layer\'s: bare or with an idempotency_* code, it leaves the outcome unknown, like a 5xx', async () => {
   const cases: [number, unknown, boolean][] = [
     [422, { error: { code: 'validation_failed', message: 'Validation failed', field_errors: [{ path: 'items.0.unit_code', message: 'Input should be HUR', code: 'enum' }] } }, true],
+    // Abillio still holds the key for an earlier attempt: said bare by a
+    // backend from before the envelope, in the envelope by a newer one.
     [409, { detail: 'A request with this idempotency key is still in progress.' }, false],
+    [409, { error: { code: 'idempotency_in_progress', message: 'A request with this idempotency key is still in progress' } }, false],
+    [409, { error: { code: 'idempotency_key_reused', message: 'Idempotency key already used with a different request' } }, false],
+    [409, { error: { code: 'idempotency_reconciliation_required', message: 'The earlier request under this key requires reconciliation' } }, false],
+    // Not only a 409: the earlier attempt's answer is stored, and it may have done its work.
+    [403, { error: { code: 'idempotency_replay_forbidden', message: 'Authorization changed since the original request' } }, false],
     [503, { error: { code: 'service_unavailable', message: 'Try again later' } }, false],
   ];
   for (const [status, body, verified] of cases) {
     await assert.rejects(answering(status, body)('POST', '/x', {}, { idempotencyKey: 'idem-5' }), (err: AbillioError) => {
-      assert.equal(err.verified, verified, `${status}`);
+      assert.equal(err.verified, verified, `${status} ${err.code}`);
       return true;
     });
   }

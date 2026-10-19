@@ -32,12 +32,15 @@ export class AbillioError extends Error {
   // Whether this answer settles the call's outcome: a refusal Abillio's API
   // composed itself, in its envelope with its own code, below 500. Only then
   // is the idempotency key known to be spent on a request that did nothing.
-  // A body without the envelope (the idempotency layer's bare `{"detail": …}`
-  // 409: still in progress, needs reconciliation, used with a different
-  // request; or a proxy's error page) and any 5xx leave the outcome of the
+  // The idempotency layer's answers settle nothing: Abillio still holds the
+  // key for an earlier attempt (still in progress, needs reconciliation, used
+  // with a different request, a stored answer it may not replay), which an
+  // older backend says in a bare `{"detail": …}` and a newer one in the
+  // envelope, with an `idempotency_*` code. Those, any other body without
+  // the envelope (a proxy's error page) and any 5xx leave the outcome of the
   // keyed request unknown, so its key has to be kept for the retry.
   get verified(): boolean {
-    return this.status < 500 && this.code !== `http_${this.status}`;
+    return this.status < 500 && !this.code.startsWith('http_') && !this.code.startsWith('idempotency_');
   }
 }
 
