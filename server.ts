@@ -5,12 +5,15 @@ import { serve } from '@hono/node-server';
 import { serveStatic } from '@hono/node-server/serve-static';
 import { Hono } from 'hono';
 import { streamSSE } from 'hono/streaming';
-import { createApi, type Api } from './lib/abillio.ts';
+import { AbillioError, createApi, type Api } from './lib/abillio.ts';
 import { loadEnv } from './lib/env.ts';
 import { loadState, updateState, type State } from './lib/store.ts';
 import { Trace, trace as processTrace } from './lib/trace.ts';
 import { checkKey, type KeyReport } from './steps/01-key.ts';
+import { findEngagement, readSession, returnUrlFor, startOnboarding } from './steps/02-onboard.ts';
 import { companyPage } from './views/company.ts';
+import { joinPage } from './views/join.ts';
+import { page } from './views/layout.ts';
 
 export type Deps = {
   api: Api;
@@ -59,6 +62,45 @@ export function createApp(deps: Deps): Hono {
       return render(c, err);
     }
   });
+
+  app.get('/join', c => c.html(joinPage(deps.state.load(), deps.abillioOrigin())));
+
+  app.post('/join', async c => {
+    const form = Object.fromEntries((await c.req.formData()).entries()) as Record<string, string>;
+    if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(form.email ?? '')) return c.text('e-mail looks wrong', 422);
+    const locale = form.locale === 'en' ? 'en' : 'lv';
+    try {
+      const session = await startOnboarding(deps.api, deps.state.load(), { first_name: form.first_name ?? '', last_name: form.last_name ?? '', email: form.email, tax_country: form.tax_country || 'LV', locale }, returnUrlFor(deps.publicUrl, deps.port));
+      deps.state.update(s => { s.freelancer = { email: form.email, session_id: session.session_id, session_url: session.url, engagement_id: null, servicing_company_slug: null }; s.invoice = null; s.payout = null; });
+      return c.json(session);
+    } catch (err) {
+      return c.text(err instanceof AbillioError ? `${err.code}: ${err.message}` : String(err), 502);
+    }
+  });
+
+  app.get('/join/status', async c => {
+    const f = deps.state.load().freelancer;
+    if (!f) return c.json({ state: 'none', can_be_paid: false, requirements: [] });
+    // Either Abillio read can fail (a 401, a network blip). The answer is then
+    // a 502 with the error text, which the page's poll skips before asking
+    // again on its next tick, instead of an unhandled 500.
+    try {
+      const status = await readSession(deps.api, f.session_id);
+      let engagementId = f.engagement_id;
+      if (status.state !== 'awaiting_freelancer' && !engagementId) {
+        const engagement = await findEngagement(deps.api, f.email);
+        if (engagement) {
+          engagementId = engagement.id;
+          deps.state.update(s => { if (s.freelancer) { s.freelancer.engagement_id = engagement.id; s.freelancer.servicing_company_slug = engagement.servicing_company_slug; } });
+        }
+      }
+      return c.json({ ...status, engagement_id: engagementId });
+    } catch (err) {
+      return c.text(err instanceof AbillioError ? `${err.code}: ${err.message}` : String(err), 502);
+    }
+  });
+
+  app.get('/back', c => c.html(page('Back', '<main class="one-col"><section class="panel"><h1>Thanks — you can close this window.</h1><p class="muted">Abillio sends the freelancer here when the popup has no opener to post to.</p></section></main>')));
 
   app.get('/api/state', c => c.json(publicState(deps.state.load())));
   app.get('/api/trace', c => c.json(deps.trace.list()));

@@ -53,3 +53,33 @@ test('GET /api/state returns the stored state as JSON, without the webhook secre
   const html = await (await app2.request('/')).text();
   assert.ok(!html.includes('a'.repeat(60)));
 });
+
+test('the join page opens the popup from the session url and polls the status', async () => {
+  const api = (async (method: string, path: string) => {
+    if (method === 'POST' && path === '/onboarding/sessions/') return { session_id: 's1', url: 'https://new.abillio.dev/s/tok', status: 'awaiting_freelancer', purpose: 'onboarding' };
+    if (path === '/onboarding/sessions/s1') return { state: 'in_progress', can_be_paid: false, purpose: 'onboarding', requirements: [{ key: 'kyc', state: 'in_progress' }] };
+    if (path.startsWith('/engagements/?search=')) return { count: 1, items: [{ id: 'e1', status: 'invited', counterparty: { email: 'anna@example.com', servicing_company: { slug: 'abillio-ks' } }, compliance: { can_be_paid: false } }] };
+    throw new Error(`${method} ${path}`);
+  }) as Api;
+  const { app, state } = appWith(api);
+  const form = new URLSearchParams({ first_name: 'Anna', last_name: 'Ozola', email: 'anna@example.com', tax_country: 'LV', locale: 'lv' });
+  const created = await app.request('/join', { method: 'POST', body: form, headers: { 'content-type': 'application/x-www-form-urlencoded' } });
+  assert.equal(created.status, 200);
+  assert.deepEqual(await created.json(), { session_id: 's1', url: 'https://new.abillio.dev/s/tok', origin: 'https://new.abillio.dev' });
+  assert.equal(state.load().freelancer?.session_id, 's1');
+  const status = await app.request('/join/status');
+  const body = await status.json();
+  assert.equal(body.state, 'in_progress');
+  assert.equal(body.engagement_id, 'e1');
+  assert.equal(state.load().freelancer?.engagement_id, 'e1');
+  const back = await app.request('/back');
+  assert.ok((await back.text()).includes('close this window'));
+});
+
+test('the join page rejects a malformed e-mail before calling Abillio', async () => {
+  let called = false;
+  const { app } = appWith((async () => { called = true; return {}; }) as Api);
+  const res = await app.request('/join', { method: 'POST', body: new URLSearchParams({ first_name: 'A', last_name: 'B', email: 'nope', tax_country: 'LV', locale: 'lv' }), headers: { 'content-type': 'application/x-www-form-urlencoded' } });
+  assert.equal(res.status, 422);
+  assert.equal(called, false);
+});

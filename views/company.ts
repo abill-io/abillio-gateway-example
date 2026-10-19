@@ -20,6 +20,14 @@ export function keyPanel(key: KeyReport | null, state: State): string {
   </section>`;
 }
 
+export function onboardingPanel(state: State): string {
+  const f = state.freelancer;
+  return `<section class="panel" id="step-2"><h2>Step 2 — The freelancer joins</h2>
+    <p>Happens on <a href="/join">the freelancer's page</a>: <code>POST /onboarding/sessions/</code>, the popup, then <code>GET /onboarding/sessions/{id}</code> until <code>can_be_paid</code>, and <code>GET /engagements/?search=…</code> for the engagement id.</p>
+    ${f ? `<p>Freelancer <b>${esc(f.email)}</b> — session <code>${esc(f.session_id)}</code>, engagement <code>${esc(f.engagement_id ?? '(not yet)')}</code>, served by <code>${esc(f.servicing_company_slug ?? '?')}</code>.</p>` : '<p class="muted">Nobody has joined yet.</p>'}
+  </section>`;
+}
+
 export function placeholderPanel(n: number, title: string): string {
   return `<section class="panel" id="step-${esc(n)}"><h2>Step ${esc(n)} — ${esc(title)}</h2><p class="muted">Coming in a later task.</p></section>`;
 }
@@ -29,7 +37,7 @@ export function companyPage(input: CompanyPageInput): string {
     <div>
       ${errorBox(input.error)}
       ${keyPanel(input.key, input.state)}
-      ${placeholderPanel(2, 'Onboarding')}
+      ${onboardingPanel(input.state)}
       ${placeholderPanel(3, 'Issue')}
       ${placeholderPanel(4, 'Pay')}
       ${placeholderPanel(5, 'Events')}
