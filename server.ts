@@ -32,14 +32,18 @@ export function createApp(deps: Deps): Hono {
   const app = new Hono();
   let lastKey: KeyReport | null = null;
   const refreshListeners = new Set<() => void>();
-  // One place that says "the page should reload": the receiver (Task 9),
-  // the poller (Task 9) and the trace all end up here.
+  // One place that says "the page should reload": the webhook receiver and
+  // the poller (both Task 9) end up here.
   const notifyStored = () => { deps.onStored(); for (const fn of refreshListeners) fn(); };
+  // What a page or /api/state may show of the state: everything except the
+  // webhook signing secret. On the hosted copy every visitor sees this page,
+  // and the secret is what lets someone forge a delivery.
+  const publicState = (s: State): State => (s.webhook ? { ...s, webhook: { ...s.webhook, secret: '…' + s.webhook.secret.slice(-4) } } : s);
 
   // `c.html` is typed `Response | Promise<Response>` (it also takes a
   // Promise<string>); a route handler returns either.
   const render = (c: { html: (s: string) => Response | Promise<Response> }, error: unknown = null) =>
-    c.html(companyPage({ state: deps.state.load(), trace: deps.trace.list(), key: lastKey, error, publicUrl: deps.publicUrl }));
+    c.html(companyPage({ state: publicState(deps.state.load()), trace: deps.trace.list(), key: lastKey, error, publicUrl: deps.publicUrl }));
 
   app.use('/public/*', serveStatic({ root: './' }));
 
@@ -56,15 +60,17 @@ export function createApp(deps: Deps): Hono {
     }
   });
 
-  app.get('/api/state', c => c.json(deps.state.load()));
+  app.get('/api/state', c => c.json(publicState(deps.state.load())));
   app.get('/api/trace', c => c.json(deps.trace.list()));
 
+  // `refresh` fires only when something was STORED (a webhook, a poll): a
+  // button's own request renders its page itself, and a refresh on every
+  // traced call would reload the page mid-request and throw the answer away.
   app.get('/events', c =>
     streamSSE(c, async stream => {
       const send = () => stream.writeSSE({ event: 'refresh', data: String(Date.now()) });
       refreshListeners.add(send);
-      const unsubscribe = deps.trace.subscribe(() => send());
-      stream.onAbort(() => { refreshListeners.delete(send); unsubscribe(); });
+      stream.onAbort(() => { refreshListeners.delete(send); });
       while (!stream.aborted) await stream.sleep(15_000);
     }),
   );

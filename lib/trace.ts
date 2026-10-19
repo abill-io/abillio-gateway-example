@@ -1,5 +1,7 @@
 // The last N calls to Abillio, for the page's "what we just sent / got back"
-// panel. Signatures are never stored: `createApi` redacts before pushing.
+// panel. Headers (the signature among them) are never recorded, and
+// `createApi` replaces body keys named like secrets before pushing
+// (`redactForTrace`): the page shows the trace to whoever opens it.
 export type TraceEntry = {
   at: string;
   method: string;

@@ -10,10 +10,12 @@ export function keyPanel(key: KeyReport | null, state: State): string {
   const table = key
     ? `<table><tr><th>Action</th><th>State</th></tr>${key.actions.map(a => `<tr class="${a.needed ? 'needed' : ''} state-${esc(a.state)}"><td><code>${esc(a.id)}</code>${a.needed ? ' <small>needed</small>' : ''}</td><td>${esc(a.state)}</td></tr>`).join('')}</table>`
     : '';
+  // No "signed in as <the key owner's e-mail>": on the hosted copy every
+  // visitor sees this page, and that address is not theirs to see.
   return `<section class="panel" id="step-1"><h2>Step 1 — Does the key work?</h2>
     <p><code>GET /me/session/</code> says who the key acts as; <code>GET /me/authorization/</code> lists what it may do. A <b>forbidden</b> row here explains a later 403 before it happens.</p>
     <form method="post" action="/steps/key"><button>Check the key</button></form>
-    ${state.account ? `<p>Acting as <b>${esc(state.account.name)}</b> (<code>${esc(state.account.slug)}</code>)${key?.account.is_sandbox ? ' <span class="tag">sandbox</span>' : ''}${key ? `, signed in as ${esc(key.user_email)}` : ''}.</p>` : ''}
+    ${state.account ? `<p>Acting as <b>${esc(state.account.name)}</b> (<code>${esc(state.account.slug)}</code>)${key?.account.is_sandbox ? ' <span class="tag">sandbox</span>' : ''}.</p>` : ''}
     ${table}
   </section>`;
 }

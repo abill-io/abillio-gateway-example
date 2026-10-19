@@ -14,7 +14,7 @@ export function tracePanel(entries: TraceEntry[]): string {
       <h4>Response</h4>${jsonBlock(e.responseBody)}
       ${e.error ? `<p class="error">${esc(e.error)}</p>` : ''}
     </details>`).join('');
-  return `<section id="trace" class="panel"><h2>What we sent to Abillio</h2><p class="muted">Newest first. Signatures are not shown; everything else is exactly the wire.</p>${rows || '<p class="muted">Nothing yet — press a button.</p>'}</section>`;
+  return `<section id="trace" class="panel"><h2>What we sent to Abillio</h2><p class="muted">Newest first. Headers are not shown, and secrets and e-mail addresses in a body read <code>[redacted]</code>; everything else is exactly the wire.</p>${rows || '<p class="muted">Nothing yet — press a button.</p>'}</section>`;
 }
 
 export function errorBox(err: unknown): string {

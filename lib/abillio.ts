@@ -86,6 +86,18 @@ export type Api = <T>(
 
 const PKCS8_ED25519_PREFIX = Buffer.from('302e020100300506032b657004220420', 'hex');
 
+// What the trace may keep of a body: keys named like secrets are replaced,
+// because the page serves the trace to whoever opens it (on the hosted copy,
+// everyone). Headers are never recorded at all.
+const REDACTED_KEYS = new Set(['secret', 'private_key', 'password', 'token', 'user_email']);
+export function redactForTrace(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(redactForTrace);
+  if (value && typeof value === 'object') {
+    return Object.fromEntries(Object.entries(value as Record<string, unknown>).map(([k, v]) => [k, REDACTED_KEYS.has(k) ? '[redacted]' : redactForTrace(v)]));
+  }
+  return value;
+}
+
 export function buildMessage(parts: { timestamp: string; account: string; method: string; path: string; body: string }): string {
   return `${parts.timestamp}${parts.account}${parts.method}${parts.path}${parts.body}`;
 }
@@ -138,7 +150,7 @@ export function createApi(
       at: new Date(now()).toISOString(),
       method,
       path: url.pathname + url.search,
-      requestBody: body ?? null,
+      requestBody: redactForTrace(body ?? null),
       status: null as number | null,
       responseBody: null as unknown,
       idempotencyKey: opts.idempotencyKey ?? null,
@@ -162,7 +174,7 @@ export function createApi(
       parsed = text;
     }
     entry.status = response.status;
-    entry.responseBody = parsed;
+    entry.responseBody = redactForTrace(parsed);
     entry.replayed = response.headers.get('idempotent-replay') !== null;
     if (!response.ok) {
       const error = new AbillioError(response.status, typeof parsed === 'object' ? (parsed as Record<string, unknown>) : null, text);

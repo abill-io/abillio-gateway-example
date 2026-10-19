@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { createPublicKey, verify } from 'node:crypto';
-import { AbillioError, buildMessage, createApi, signMessage } from '../lib/abillio.ts';
+import { AbillioError, buildMessage, createApi, redactForTrace, signMessage } from '../lib/abillio.ts';
 import { Trace } from '../lib/trace.ts';
 import type { Env } from '../lib/env.ts';
 
@@ -97,6 +97,27 @@ test('the trace keeps the request and response but never the signature, and mark
   assert.equal(entry.idempotencyKey, 'idem-2');
   assert.deepEqual(entry.requestBody, { invoice_uuid: 'inv-1' });
   assert.ok(!JSON.stringify(entry).includes(vectors.seed_hex));
+});
+
+test('the trace redacts keys named like secrets in both bodies; the wire and the caller still get the real values', async () => {
+  const trace = new Trace();
+  let sent = '';
+  const api = createApi(env, {
+    fetchImpl: fakeFetch((_url, init) => { sent = String(init.body); return new Response(JSON.stringify({ user_email: 'a@b.c', ok: true }), { status: 200 }); }),
+    trace,
+  });
+  const out = await api<{ user_email: string }>('POST', '/accounts/notifications/channels/', { name: 'x', secret: 'topsecret' }, { idempotencyKey: 'idem-5' });
+  const entry = trace.last()!;
+  assert.deepEqual(entry.requestBody, { name: 'x', secret: '[redacted]' });
+  assert.deepEqual(entry.responseBody, { user_email: '[redacted]', ok: true });
+  assert.equal(sent, '{"name":"x","secret":"topsecret"}', 'the wire carries the real secret');
+  assert.equal(out.user_email, 'a@b.c', 'the caller gets the real answer');
+});
+
+test('redactForTrace replaces the other listed keys at any depth, inside arrays too, and copies instead of mutating', () => {
+  const body = { password: 'p', items: [{ token: 't', n: 1 }], nested: { private_key: 'k', keep: 'v' } };
+  assert.deepEqual(redactForTrace(body), { password: '[redacted]', items: [{ token: '[redacted]', n: 1 }], nested: { private_key: '[redacted]', keep: 'v' } });
+  assert.equal(body.items[0].token, 't');
 });
 
 function answering(status: number, body: unknown) {

@@ -35,12 +35,21 @@ test('POST /steps/key stores the account and shows the actions table; an error r
   assert.equal(res.status, 200);
   const html = await res.text();
   assert.ok(html.includes('Acme') && html.includes('freelancers.invite'));
+  assert.ok(!html.includes('dev@acme.test'), "the key owner's e-mail is not on the page");
   assert.equal(state.load().account?.slug, 'acme');
 });
 
-test('GET /api/state returns the stored state as JSON', async () => {
+test('GET /api/state returns the stored state as JSON, without the webhook secret', async () => {
   const { app } = appWith((async () => ({})) as Api);
   const res = await app.request('/api/state');
   assert.equal(res.headers.get('content-type')?.includes('application/json'), true);
   assert.deepEqual(await res.json(), defaultState());
+  const withSecret = defaultState();
+  withSecret.webhook = { channel_id: 'ch1', subscription_id: 'sub1', secret: 'a'.repeat(60) + 'beef', url: 'https://x/webhooks/abillio' };
+  const { app: app2 } = appWith((async () => ({})) as Api, memoryState(withSecret));
+  const body = await (await app2.request('/api/state')).text();
+  assert.ok(!body.includes('a'.repeat(60)), 'the secret never leaves the server');
+  assert.ok(body.includes('beef'), 'its last four characters identify it');
+  const html = await (await app2.request('/')).text();
+  assert.ok(!html.includes('a'.repeat(60)));
 });
