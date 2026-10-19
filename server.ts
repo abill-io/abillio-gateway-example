@@ -60,18 +60,28 @@ export function createApp(deps: Deps): Hono {
   // One place that says "the page should reload": the webhook receiver and
   // the poller (both Task 9) end up here.
   const notifyStored = () => { deps.onStored(); for (const fn of refreshListeners) fn(); };
+  // The account the stored key check found, if that check was made with the
+  // key and the ABILLIO_ACCOUNT this process signs with. A check made with
+  // others says nothing about the account reached now, so the guard below and
+  // the page both read it as no check at all.
+  const boundAccount = (s: State): State['account'] =>
+    s.account && s.account.key_id === deps.keyId && s.account.env_account === deps.account ? s.account : null;
   // What a page or /api/state may show of the state: everything except the
   // webhook signing secret, connected or still pending, and the API key id
   // the key check was made with. On the hosted copy every visitor sees this
   // page; the secret is what lets someone forge a delivery, and the key id is
-  // the credential's name, kept out of sight like the rest of .env.
+  // the credential's name, kept out of sight like the rest of .env. The
+  // account is the bound one, so the page gates its buttons as the guard does.
   const mask = (secret: string) => '…' + secret.slice(-4);
-  const publicState = (s: State): State => ({
-    ...s,
-    account: s.account && { ...s.account, key_id: mask(s.account.key_id ?? '') },
-    webhook: s.webhook && { ...s.webhook, secret: mask(s.webhook.secret) },
-    webhook_request: s.webhook_request && { ...s.webhook_request, secret: mask(s.webhook_request.secret) },
-  });
+  const publicState = (s: State): State => {
+    const account = boundAccount(s);
+    return {
+      ...s,
+      account: account && { ...account, key_id: mask(account.key_id) },
+      webhook: s.webhook && { ...s.webhook, secret: mask(s.webhook.secret) },
+      webhook_request: s.webhook_request && { ...s.webhook_request, secret: mask(s.webhook_request.secret) },
+    };
+  };
 
   // `c.html` is typed `Response | Promise<Response>` (it also takes a
   // Promise<string>); a route handler returns either.
@@ -128,15 +138,12 @@ export function createApp(deps: Deps): Hono {
   // Every route that writes to Abillio runs only against a sandbox account.
   // The sample mints links, invoices and payments with whatever key it is
   // given, and a key pasted from production would make them real. The key
-  // check stores which kind of account the key reaches, with the key and the
-  // ABILLIO_ACCOUNT it was made with; a check made with others says nothing
-  // about the account reached now, so it counts as no check, and until there
-  // is one nothing is sent. ALLOW_PRODUCTION=1 is the way past for a partner
-  // who means it.
+  // check stores which kind of account the key reaches; until there is a
+  // check for this process's key and ABILLIO_ACCOUNT (boundAccount), nothing
+  // is sent. ALLOW_PRODUCTION=1 is the way past for a partner who means it.
   const sandboxRefusal = (): string | null => {
     if (deps.allowProduction) return null;
-    const stored = deps.state.load().account;
-    const account = stored && stored.key_id === deps.keyId && stored.env_account === deps.account ? stored : null;
+    const account = boundAccount(deps.state.load());
     if (account?.is_sandbox === true) return null;
     return account?.is_sandbox === false
       ? 'This back office runs against sandbox accounts only (the key belongs to a production account).'

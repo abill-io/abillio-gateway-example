@@ -7,8 +7,9 @@ export function memoryState(initial: State = defaultState()) {
   return { load: () => current, update: (fn: (s: State) => void) => { fn(current); return current; } };
 }
 
-// The key and ABILLIO_ACCOUNT the test app runs with (appWith's Deps).
-export const TEST_ENV = { keyId: 'key_1', account: '' };
+// The key and ABILLIO_ACCOUNT the test app runs with (appWith's Deps). The key
+// id is as long as a real one, so a test can tell that the page masks it.
+export const TEST_ENV = { keyId: 'key_6f1d0c9a8e7b5d3c2a4f8e6d1bdf', account: '' };
 
 // What the key check stores for a sandbox key under TEST_ENV: every route that
 // writes to Abillio runs only on such an account (or with ALLOW_PRODUCTION).

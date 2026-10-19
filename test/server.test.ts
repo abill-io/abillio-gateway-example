@@ -85,7 +85,7 @@ test('POST /steps/key stores the account and shows the actions table; an error r
   const html = await res.text();
   assert.ok(html.includes('Acme') && html.includes('freelancers.invite'));
   assert.ok(!html.includes('dev@acme.test'), "the key owner's e-mail is not on the page");
-  assert.deepEqual(state.load().account, { id: 'a1', name: 'Acme', slug: 'acme', is_sandbox: true, key_id: 'key_1', env_account: '' }, 'with whether it is a sandbox, which every write route asks, and the key and ABILLIO_ACCOUNT the answer is for');
+  assert.deepEqual(state.load().account, { id: 'a1', name: 'Acme', slug: 'acme', is_sandbox: true, key_id: TEST_ENV.keyId, env_account: '' }, 'with whether it is a sandbox, which every write route asks, and the key and ABILLIO_ACCOUNT the answer is for');
 });
 
 test('GET /api/state returns the stored state as JSON, without the webhook secret or the API key id', async () => {
@@ -96,16 +96,17 @@ test('GET /api/state returns the stored state as JSON, without the webhook secre
   const withSecret = defaultState();
   withSecret.webhook = { channel_id: 'ch1', subscription_id: 'sub1', secret: 'a'.repeat(60) + 'beef', url: 'https://x/webhooks/abillio' };
   withSecret.webhook_request = { url: 'https://x/webhooks/abillio', secret: 'c'.repeat(60) + 'f00d' };
-  // The key check stores the key id it was made with; .env treats it as a secret.
-  withSecret.account = { ...sandboxState().account!, key_id: 'd'.repeat(28) + '1bdf' };
+  // The key check stores the key id it was made with (the running one, or the
+  // page would show no account at all); .env treats it as a secret.
+  withSecret.account = sandboxState().account;
   const { app: app2 } = appWith((async () => ({})) as Api, memoryState(withSecret));
   const body = await (await app2.request('/api/state')).text();
   assert.ok(!body.includes('a'.repeat(60)), 'the secret never leaves the server');
   assert.ok(!body.includes('c'.repeat(60)), "nor does a pending channel request's");
-  assert.ok(!body.includes('d'.repeat(28)), 'nor does the API key id');
-  assert.ok(body.includes('beef') && body.includes('f00d') && body.includes('1bdf'), 'their last four characters identify them');
+  assert.ok(!body.includes(TEST_ENV.keyId.slice(0, -4)), 'nor does the API key id');
+  assert.ok(body.includes('beef') && body.includes('f00d') && body.includes(TEST_ENV.keyId.slice(-4)), 'their last four characters identify them');
   const html = await (await app2.request('/')).text();
-  assert.ok(!html.includes('a'.repeat(60)) && !html.includes('c'.repeat(60)) && !html.includes('d'.repeat(28)));
+  assert.ok(!html.includes('a'.repeat(60)) && !html.includes('c'.repeat(60)) && !html.includes(TEST_ENV.keyId.slice(0, -4)));
 });
 
 test('the join page opens the popup from the session url and polls the status', async () => {
@@ -865,7 +866,7 @@ test('every route that writes to Abillio runs only on a sandbox account, unless 
     { label: 'checked under another key id', account: { ...checked, key_id: 'key_0' }, allowProduction: false, refusal: CHECK_FIRST },
     { label: 'checked under another ABILLIO_ACCOUNT', account: { ...checked, env_account: 'other-company' }, allowProduction: false, refusal: CHECK_FIRST },
     // A state file written before the flag existed.
-    { label: 'stored without a flag', account: { id: 'a1', name: 'Acme', slug: 'acme', key_id: 'key_1', env_account: '' } as unknown as State['account'], allowProduction: false, refusal: CHECK_FIRST },
+    { label: 'stored without a flag', account: { id: 'a1', name: 'Acme', slug: 'acme', key_id: TEST_ENV.keyId, env_account: '' } as unknown as State['account'], allowProduction: false, refusal: CHECK_FIRST },
     { label: 'ALLOW_PRODUCTION', account: production, allowProduction: true, refusal: null },
   ];
   for (const { label, account, allowProduction, refusal } of cases) {
@@ -903,4 +904,37 @@ test('the latest key check decides: one that finds a production account, or one 
   assert.equal(state.load().account, null, 'a failed check forgets the account');
   assert.ok((await press('/reset')).includes('Check the key first (step 1)'));
   assert.deepEqual(writes, [], 'nothing was written to Abillio');
+});
+
+test('a check stored under another key or ABILLIO_ACCOUNT reads as none: step 1 is up next, nobody is acting, and no button that writes to Abillio is enabled', async () => {
+  // A whole walk, so every write button has what it needs: only the key
+  // check is in question.
+  const walk = (account: State['account']) => {
+    const s = issuedState('pending', { id: 'p1', status: 'pending' });
+    s.account = account;
+    s.webhook = { channel_id: 'ch1', subscription_id: 'sub1', secret: 'a'.repeat(64), url: 'https://x/webhooks/abillio' };
+    return s;
+  };
+  // Each button of a form that posts to a write route, and whether it is disabled.
+  const writeButtons = (html: string) => [...html.matchAll(/<form method="post" action="([^"]+)"[^>]*>([\s\S]*?)<\/form>/g)]
+    .filter(([, action]) => WRITE_ROUTES.some(([path]) => path === action))
+    .flatMap(([, action, inner]) => [...inner.matchAll(/<button\b([^>]*)>/g)].map(b => ({ action, disabled: /\bdisabled\b/.test(b[1]) })));
+  const render = async (account: State['account']) => {
+    const { app } = appWith((async () => { throw new Error('a render calls nothing'); }) as Api, memoryState(walk(account)), 'https://x');
+    return { html: await (await app.request('/')).text(), state: (await (await app.request('/api/state')).json()) as State };
+  };
+  const checked = sandboxState().account!;
+  for (const [label, swapped] of [['another key id', { ...checked, key_id: 'key_0' }], ['another ABILLIO_ACCOUNT', { ...checked, env_account: 'other-company' }]] as const) {
+    const { html, state } = await render(swapped);
+    assert.ok(!html.includes('Acting as'), `${label}: nobody is acting`);
+    assert.equal(html.match(/<li class="step is-current">[\s\S]*?id="step-(\d)"/)?.[1], '1', `${label}: step 1 is up next`);
+    assert.equal(state.account, null, `${label}: nor does /api/state show the account`);
+    const buttons = writeButtons(html);
+    assert.deepEqual(new Set(buttons.map(b => b.action)), new Set(['/steps/issue', '/steps/pay/fund', '/steps/pay/pay', '/steps/pay/simulate', '/steps/events/connect', '/steps/events/test', '/reset']), `${label}: every write button is on the page`);
+    assert.deepEqual(buttons.filter(b => !b.disabled), [], `${label}: and none is enabled`);
+  }
+  // The same walk, checked with the key this process runs with: all live.
+  const { html } = await render(checked);
+  assert.ok(html.includes('Acting as'));
+  assert.deepEqual(writeButtons(html).filter(b => b.disabled), []);
 });

@@ -86,10 +86,11 @@ what **Check the key** stored: until it has seen a sandbox account, the button
 refuses and sends nothing, and on a production account it says *This back
 office runs against sandbox accounts only (the key belongs to a production
 account)*. A check counts only for the key and the `ABILLIO_ACCOUNT` it was made
-with: change either in `.env` and the buttons wait for a new check, and a check
-that fails forgets the account. `ALLOW_PRODUCTION=1` in `.env` lifts the guard,
-for a partner who has read the code and means to run it against real money; the
-smoke test refuses a production account regardless.
+with: change either in `.env` and the page shows no account, its buttons
+disabled until a new check, and a check that fails forgets the account.
+`ALLOW_PRODUCTION=1` in `.env` lifts the guard, for a partner who has read the
+code and means to run it against real money; the smoke test refuses a production
+account regardless.
 
 ## How it is put together
 

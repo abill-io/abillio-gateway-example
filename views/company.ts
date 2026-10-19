@@ -8,6 +8,15 @@ import { errorBox, jsonBlock, rail, stateTag, stepHead, stepStatuses, tracePanel
 
 export type CompanyPageInput = { state: State; trace: TraceEntry[]; key: KeyReport | null; error: unknown; publicUrl: string | null };
 
+// Every button that writes to Abillio waits for the key check, as the
+// server's guard does: the page is handed only a check made with this
+// process's key and ABILLIO_ACCOUNT (server.ts's publicState), so a check
+// stored under others leaves them all disabled. `ready` is whatever else the
+// button's step needs.
+function live(state: State, ready = true): string {
+  return state.account && ready ? '' : ' disabled';
+}
+
 // Each panel takes its step's status from companyPage, which reads them all
 // once; called on its own, a panel reads its own.
 export function keyPanel(key: KeyReport | null, state: State, status: StepStatus = stepStatuses(state)[0]): string {
@@ -47,7 +56,7 @@ function issueFields(values: { description: string; unit_price: string; currency
 // stored request or draft is never shown as a form that would be ignored.
 export function issuePanel(state: State, status: StepStatus = stepStatuses(state)[2]): string {
   const ready = Boolean(state.freelancer?.engagement_id && state.account);
-  const button = (label: string) => `<button ${ready ? '' : 'disabled'}>${esc(label)}</button>`;
+  const button = (label: string) => `<button${live(state, ready)}>${esc(label)}</button>`;
   const stage = issueStage(state);
   const inv = state.invoice;
   const request = pendingRequest(state);
@@ -90,11 +99,11 @@ export function payPanel(state: State, status: StepStatus = stepStatuses(state)[
   const payLabel = paid ? 'Pay again — replays the same payment (no second debit)' : `Pay invoice ${inv?.number ?? ''}`;
   return `<section class="panel" id="step-4" aria-labelledby="step-4-title">${stepHead(4, 'Step 4 — Pay it from the wallet', status)}
     <p><code>POST /accounts/wallet/sandbox/simulate-deposit</code> funds the sandbox wallet, <code>POST /accounts/wallet/pay-invoice/</code> pays what the invoice still owes, Abillio creates the payout; <code>POST …/payouts/{id}/sandbox/simulate</code> settles it as the bank would.</p>
-    <form method="post" action="/steps/pay/fund" class="fund"><label>Deposit <input name="amount" class="amount" value="250.00" required pattern="\\d+(\\.\\d{1,2})?"></label> <span class="unit">EUR on <code>${esc(company)}</code></span> <button ${state.account ? '' : 'disabled'}>Fund the wallet</button></form>
-    <form method="post" action="/steps/pay/pay" class="pay"><button ${payable || paid ? '' : 'disabled'}>${esc(payLabel)}</button></form>
+    <form method="post" action="/steps/pay/fund" class="fund"><label>Deposit <input name="amount" class="amount" value="250.00" required pattern="\\d+(\\.\\d{1,2})?"></label> <span class="unit">EUR on <code>${esc(company)}</code></span> <button${live(state)}>Fund the wallet</button></form>
+    <form method="post" action="/steps/pay/pay" class="pay"><button${live(state, payable || paid)}>${esc(payLabel)}</button></form>
     ${paid && !payout ? '<p class="muted">No payout was created for this payment: the invoice carries no verified payout method, or Abillio refused the payout. A refusal leaves a <code>wallet.auto_payout_blocked</code> notification in your Abillio inbox; it is an inbox notification, not a webhook event.</p>' : ''}
     ${payout ? `<p class="facts">Payout <code>${esc(payout.id)}</code> — status ${stateTag(payout.status)}</p>
-    <form method="post" action="/steps/pay/simulate" class="outcomes">${PAYOUT_OUTCOMES.map(o => `<button name="outcome" value="${esc(o)}">Simulate ${esc(o)}</button>`).join(' ')}</form>` : ''}
+    <form method="post" action="/steps/pay/simulate" class="outcomes">${PAYOUT_OUTCOMES.map(o => `<button name="outcome" value="${esc(o)}"${live(state)}>Simulate ${esc(o)}</button>`).join(' ')}</form>` : ''}
   </section>`;
 }
 
@@ -105,7 +114,7 @@ export function eventsPanel(state: State, publicUrl: string | null, status: Step
   return `<section class="panel" id="step-5" aria-labelledby="step-5-title">${stepHead(5, 'Step 5 — Hear from Abillio', status)}
     ${publicUrl
       ? `<p>Public URL <code>${esc(publicUrl)}</code>. <code>POST /accounts/notifications/channels/</code> + <code>POST /accounts/notifications/subscriptions/</code>; deliveries arrive at <code>/webhooks/abillio</code>, signed.</p>
-         <div class="button-row"><form method="post" action="/steps/events/connect"><button>${w ? 'Reconnect' : 'Connect webhooks'}</button></form>${w ? '<form method="post" action="/steps/events/test"><button>Send a test delivery</button></form>' : ''}</div>
+         <div class="button-row"><form method="post" action="/steps/events/connect"><button${live(state)}>${w ? 'Reconnect' : 'Connect webhooks'}</button></form>${w ? `<form method="post" action="/steps/events/test"><button${live(state)}>Send a test delivery</button></form>` : ''}</div>
          ${w ? `<p class="facts">Channel <code>${esc(w.channel_id)}</code>, subscription <code>${esc(w.subscription_id ?? '(none yet: press Reconnect)')}</code>.</p>` : ''}`
       : `<p class="muted">No <code>PUBLIC_URL</code>: webhooks are off and the server polls every 5 s instead (<code>npm run tunnel</code> prints how to get a public URL).</p>`}
     <ul class="events">${rows || '<li class="empty">Nothing received yet.</li>'}</ul>
@@ -118,7 +127,7 @@ export function companyPage(input: CompanyPageInput): string {
   // a "no" (an inline onsubmit would not stop app.js from disabling it).
   // Start over sits with the progress line in the top bar: it starts the
   // walk the line counts over.
-  const startOver = '<form method="post" action="/reset" data-confirm="Reset the sandbox demo data and forget this walk?"><button class="secondary">Start over</button></form>';
+  const startOver = `<form method="post" action="/reset" data-confirm="Reset the sandbox demo data and forget this walk?"><button class="secondary"${live(input.state)}>Start over</button></form>`;
   // `data-events` is how many events this page shows: app.js compares it with
   // the store once its event stream connects, to catch one stored in between.
   // The trace and the stored state share the console on the right, which
