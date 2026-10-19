@@ -1,6 +1,7 @@
 // The sample's one process: two pages, the step buttons, the webhook receiver
 // and an event stream for the page. Everything Abillio-facing is injected so
 // the routes are tested with a fake `api` and an in-memory state.
+import { randomUUID } from 'node:crypto';
 import { serve } from '@hono/node-server';
 import { serveStatic } from '@hono/node-server/serve-static';
 import { Hono } from 'hono';
@@ -11,7 +12,7 @@ import { forgetIdempotencyKey, loadState, updateState, type State } from './lib/
 import { Trace, trace as processTrace } from './lib/trace.ts';
 import { checkKey, type KeyReport } from './steps/01-key.ts';
 import { findEngagement, readSession, returnUrlFor, startOnboarding } from './steps/02-onboard.ts';
-import { draftInvoice, findSelfClient, issueInvoice } from './steps/03-issue.ts';
+import { draftInvoice, findSelfClient, invoiceRequest, issueInvoice, pendingRequest } from './steps/03-issue.ts';
 import { companyPage } from './views/company.ts';
 import { joinPage } from './views/join.ts';
 import { page } from './views/layout.ts';
@@ -49,6 +50,27 @@ export function createApp(deps: Deps): Hono {
   const render = (c: { html: (s: string) => Response | Promise<Response> }, error: unknown = null) =>
     c.html(companyPage({ state: publicState(deps.state.load()), trace: deps.trace.list(), key: lastKey, error, publicUrl: deps.publicUrl }));
 
+  // One keyed call. The key is claimed in the store BEFORE the call, so an
+  // overlapping press, a restart or a crash mid-call reuses it instead of
+  // minting a second one. Afterwards only an answer Abillio itself composed —
+  // an enveloped 4xx — proves the key is spent and forgets it; a bare 409 from
+  // its idempotency layer, a 5xx or a network failure leave the outcome
+  // unknown, and the key stays, so the next press replays. Only this action's
+  // key is written, never the whole map: another tab (or, on the hosted copy,
+  // another visitor) may have stored keys meanwhile.
+  async function keyed<T>(state: State, action: string, call: () => Promise<T>): Promise<T> {
+    deps.state.update(s => { state.idempotency[action] = s.idempotency[action] ??= randomUUID(); });
+    try {
+      return await call();
+    } catch (err) {
+      if (err instanceof AbillioError && err.verified) {
+        forgetIdempotencyKey(state, action);
+        deps.state.update(s => { delete s.idempotency[action]; });
+      }
+      throw err;
+    }
+  }
+
   app.use('/public/*', serveStatic({ root: './' }));
 
   app.get('/', c => render(c));
@@ -70,20 +92,15 @@ export function createApp(deps: Deps): Hono {
     const form = Object.fromEntries((await c.req.formData()).entries()) as Record<string, string>;
     if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(form.email ?? '')) return c.text('e-mail looks wrong', 422);
     const locale = form.locale === 'en' ? 'en' : 'lv';
-    // startOnboarding mints the action's key into this loaded copy; every
-    // outcome below writes the copy's keys back to the store.
     const state = deps.state.load();
     try {
-      const session = await startOnboarding(deps.api, state, { first_name: form.first_name ?? '', last_name: form.last_name ?? '', email: form.email, tax_country: form.tax_country || 'LV', locale }, returnUrlFor(deps.publicUrl, deps.port));
-      deps.state.update(s => { s.freelancer = { email: form.email, session_id: session.session_id, session_url: session.url, engagement_id: null, servicing_company_slug: null }; s.invoice = null; s.payout = null; s.idempotency = state.idempotency; });
+      // keyed() claims and keeps the action's key; startOnboarding sends it.
+      const session = await keyed(state, `onboard:${form.email.toLowerCase()}`, () =>
+        startOnboarding(deps.api, state, { first_name: form.first_name ?? '', last_name: form.last_name ?? '', email: form.email, tax_country: form.tax_country || 'LV', locale }, returnUrlFor(deps.publicUrl, deps.port)));
+      // A new session: what was stored for the previous freelancer goes.
+      deps.state.update(s => { s.freelancer = { email: form.email, session_id: session.session_id, session_url: session.url, engagement_id: null, servicing_company_slug: null }; s.invoice = null; s.invoice_request = null; s.payout = null; });
       return c.json(session);
     } catch (err) {
-      // Abillio answered with an error and keeps that key spent, so the key
-      // of the action startOnboarding keys on is forgotten: the next press is
-      // a new attempt. Any other failure (the network) leaves the outcome
-      // unknown, and the kept key lets the next press replay it if it landed.
-      if (err instanceof AbillioError) forgetIdempotencyKey(state, `onboard:${form.email.toLowerCase()}`);
-      deps.state.update(s => { s.idempotency = state.idempotency; });
       return c.text(err instanceof AbillioError ? `${err.code}: ${err.message}` : String(err), 502);
     }
   });
@@ -115,38 +132,37 @@ export function createApp(deps: Deps): Hono {
     const state = deps.state.load();
     const engagementId = state.freelancer?.engagement_id;
     if (!engagementId || !state.account) return render(c, new Error('Join a freelancer first (step 2) and check the key (step 1).'));
-    // The stored draft this press issues. A local, not `state.invoice`: the
-    // store hands out copies, so a draft this press writes never shows up in
-    // the copy it loaded, and the catch below must still know it exists.
-    let draftId = state.invoice?.status === 'draft' ? state.invoice.id : null;
     try {
-      const self = await findSelfClient(deps.api, state.account.id);
-      let invoice = state.invoice && state.invoice.status === 'draft'
-        ? { id: state.invoice.id, number: state.invoice.number, status: state.invoice.status, public_url: state.invoice.public_url, total: '', currency: '' }
-        : await draftInvoice(deps.api, state, engagementId, self.id, { description: form.description ?? '', unit_price: form.unit_price ?? '', currency_code: form.currency_code || 'EUR' });
-      // Only this route's keys are written back, never the whole map: another
-      // tab (or, on the hosted copy, another visitor) may have minted keys
-      // meanwhile.
-      deps.state.update(s => { s.invoice = { id: invoice.id, number: invoice.number, status: invoice.status, public_url: invoice.public_url }; s.idempotency[`draft:${engagementId}`] = state.idempotency[`draft:${engagementId}`]; });
-      draftId = invoice.id;
-      invoice = await issueInvoice(deps.api, state, engagementId, invoice.id);
-      deps.state.update(s => { s.invoice = { id: invoice.id, number: invoice.number, status: invoice.status, public_url: invoice.public_url }; s.idempotency[`issue:${invoice.id}`] = state.idempotency[`issue:${invoice.id}`]; });
+      // What a press does follows from what is stored (`issueStage`), so an
+      // engagement is drafted for once: with an invoice stored, a draft or an
+      // issued one, the press only (re)sends the issue call.
+      let invoice = state.invoice;
+      if (!invoice) {
+        // The unkeyed read goes first and outside keyed(): its failure says
+        // nothing about any key.
+        const self = await findSelfClient(deps.api, state.account.id);
+        // A stored request is re-sent as it is, and the form is then ignored:
+        // the bytes under its kept key must not change with the day or the form.
+        const request = pendingRequest(state) ?? invoiceRequest(engagementId, { description: form.description ?? '', unit_price: form.unit_price ?? '', currency_code: form.currency_code || 'EUR' }, new Date(deps.now()));
+        deps.state.update(s => { s.invoice_request = request; });
+        const drafted = await keyed(state, `draft:${engagementId}`, () => draftInvoice(deps.api, state, request, self.id)).catch((err: unknown) => {
+          // Refused for certain: nothing was drafted, so the form is free again.
+          if (err instanceof AbillioError && err.verified) deps.state.update(s => { s.invoice_request = null; });
+          throw err;
+        });
+        invoice = { id: drafted.id, number: drafted.number, status: drafted.status, public_url: drafted.public_url };
+        const stored = invoice;
+        // Another press may have stored this draft, and issued it, meanwhile.
+        deps.state.update(s => { s.invoice ??= stored; });
+      }
+      const id = invoice.id;
+      const issued = await keyed(state, `issue:${id}`, () => issueInvoice(deps.api, state, engagementId, id));
+      // The answer replaces only the draft it issued. Past the draft a press
+      // just shows the replay: its answer is the first issue's, which can be
+      // older than what a later step stored.
+      deps.state.update(s => { if (s.invoice?.id === id && s.invoice.status === 'draft') s.invoice = { id, number: issued.number, status: issued.status, public_url: issued.public_url }; });
       return render(c);
     } catch (err) {
-      // A verified failure (an enveloped 4xx) spends the key on Abillio's
-      // side: forget it so the next press is a new attempt. A network failure
-      // or a 5xx is an unknown outcome: the key is kept and persisted (it was
-      // minted only into the copy this press loaded), so a blind retry
-      // replays instead of issuing twice. The draft's key is forgotten only
-      // if no draft was written.
-      const action = draftId ? `issue:${draftId}` : `draft:${engagementId}`;
-      if (err instanceof AbillioError && err.status < 500) {
-        forgetIdempotencyKey(state, action);
-        deps.state.update(s => { delete s.idempotency[action]; });
-      } else {
-        const key = state.idempotency[action];
-        if (key) deps.state.update(s => { s.idempotency[action] = key; });
-      }
       return render(c, err);
     }
   });

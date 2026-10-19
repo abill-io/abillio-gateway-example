@@ -14,6 +14,19 @@ export type StoredEvent = {
   dedupe_key?: string;
 };
 
+// What the partner asked Abillio to draft, dated once. It is stored before the
+// first draft call, and a retry re-sends exactly this: under a kept key a later
+// day or an edited form would make it a different request, which Abillio
+// refuses (409).
+export type InvoiceRequest = {
+  engagement_id: string;
+  description: string;
+  unit_price: string;
+  currency_code: string;
+  issued_date: string;
+  due_date: string;
+};
+
 export type State = {
   account: { id: string; name: string; slug: string } | null;
   freelancer: {
@@ -24,6 +37,7 @@ export type State = {
     servicing_company_slug: string | null;
   } | null;
   invoice: { id: string; number: string; status: string; public_url: string } | null;
+  invoice_request: InvoiceRequest | null;
   payout: { id: string; status: string } | null;
   webhook: { channel_id: string; subscription_id: string; secret: string; url: string } | null;
   idempotency: Record<string, string>;
@@ -33,7 +47,7 @@ export type State = {
 const DEFAULT_FILE = process.env.STATE_FILE || join(process.cwd(), 'data', 'state.json');
 
 export function defaultState(): State {
-  return { account: null, freelancer: null, invoice: null, payout: null, webhook: null, idempotency: {}, events: [] };
+  return { account: null, freelancer: null, invoice: null, invoice_request: null, payout: null, webhook: null, idempotency: {}, events: [] };
 }
 
 export function loadState(file: string = DEFAULT_FILE): State {

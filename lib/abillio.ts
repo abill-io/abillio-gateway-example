@@ -28,6 +28,17 @@ export class AbillioError extends Error {
     this.requestId = typeof error.request_id === 'string' ? error.request_id : null;
     this.hint = hintFor(status, this.code);
   }
+
+  // Whether this answer settles the call's outcome: a refusal Abillio's API
+  // composed itself, in its envelope with its own code, below 500. Only then
+  // is the idempotency key known to be spent on a request that did nothing.
+  // A body without the envelope (the idempotency layer's bare `{"detail": …}`
+  // 409: still in progress, needs reconciliation, used with a different
+  // request; or a proxy's error page) and any 5xx leave the outcome of the
+  // keyed request unknown, so its key has to be kept for the retry.
+  get verified(): boolean {
+    return this.status < 500 && this.code !== `http_${this.status}`;
+  }
 }
 
 // `error.field_errors` comes in the shapes partner guide §3 lists: a map

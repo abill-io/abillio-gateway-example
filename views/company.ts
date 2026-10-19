@@ -1,6 +1,7 @@
 import type { State } from '../lib/store.ts';
 import type { TraceEntry } from '../lib/trace.ts';
 import type { KeyReport } from '../steps/01-key.ts';
+import { issueStage, pendingRequest } from '../steps/03-issue.ts';
 import { esc, page } from './layout.ts';
 import { errorBox, jsonBlock, tracePanel } from './partials.ts';
 
@@ -28,19 +29,45 @@ export function onboardingPanel(state: State): string {
   </section>`;
 }
 
+function issueFields(values: { description: string; unit_price: string; currency_code: string }): string {
+  return `<label>Description <input name="description" value="${esc(values.description)}" required></label>
+      <label>Amount <input name="unit_price" value="${esc(values.unit_price)}" required pattern="\\d+(\\.\\d{1,2})?"></label>
+      <label>Currency <select name="currency_code"><option>${esc(values.currency_code)}</option></select></label>`;
+}
+
+// The panel offers exactly what the next press will do (`issueStage`): a
+// stored request or draft is never shown as a form that would be ignored.
 export function issuePanel(state: State): string {
   const ready = Boolean(state.freelancer?.engagement_id && state.account);
+  const button = (label: string) => `<button ${ready ? '' : 'disabled'}>${esc(label)}</button>`;
+  const stage = issueStage(state);
   const inv = state.invoice;
+  const request = pendingRequest(state);
+  let body: string;
+  if (inv && stage === 'issued') {
+    // Abillio's answer, but still checked before it becomes a link.
+    const link = inv.public_url.startsWith('https://') ? `, <a href="${esc(inv.public_url)}" target="_blank" rel="noopener">open the document</a>` : '';
+    body = `<p>Invoice <b>${esc(inv.number || inv.id)}</b> — status <code>${esc(inv.status)}</code>${link}.</p>
+    <form method="post" action="/steps/issue">${button('Press again — replays the issue call')}</form>`;
+  } else if (inv && stage === 'draft') {
+    body = `<p>Draft <code>${esc(inv.id)}</code> is stored and will be issued as drafted.</p>
+    <form method="post" action="/steps/issue">${button('Issue the draft')}</form>`;
+  } else if (request && stage === 'pending') {
+    body = `<form method="post" action="/steps/issue">
+      <fieldset disabled>${issueFields(request)}</fieldset>
+      <p class="muted">The last attempt did not answer; pressing again re-sends the same request under the same key.</p>
+      ${button('Retry')}
+    </form>`;
+  } else {
+    body = `<form method="post" action="/steps/issue">
+      ${issueFields({ description: 'Tutoring, October', unit_price: '100.00', currency_code: 'EUR' })}
+      ${button('Draft and issue')}
+    </form>`;
+  }
   return `<section class="panel" id="step-3"><h2>Step 3 — Issue an invoice in the freelancer's name</h2>
     <p><code>GET /accounts/clients/</code> finds the self-client (the company itself), <code>POST /engagements/{id}/invoices/</code> drafts, <code>POST …/issue</code> issues. A 409 here lists every blocker at once.</p>
-    <form method="post" action="/steps/issue" ${ready ? '' : 'class="disabled"'}>
-      <label>Description <input name="description" value="Tutoring, October" required></label>
-      <label>Amount <input name="unit_price" value="100.00" required pattern="\\d+(\\.\\d{1,2})?"></label>
-      <label>Currency <select name="currency_code"><option>EUR</option></select></label>
-      <button ${ready ? '' : 'disabled'}>Draft and issue</button>
-    </form>
+    ${body}
     ${ready ? '' : '<p class="muted">Needs a joined freelancer (step 2) and the key check (step 1).</p>'}
-    ${inv ? `<p>Invoice <b>${esc(inv.number || inv.id)}</b> — status <code>${esc(inv.status)}</code>, <a href="${esc(inv.public_url)}" target="_blank" rel="noopener">open the document</a>.</p>` : ''}
   </section>`;
 }
 

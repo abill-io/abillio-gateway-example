@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { draftInvoice, findSelfClient, issueInvoice } from '../steps/03-issue.ts';
+import { draftInvoice, findSelfClient, invoiceRequest, issueInvoice } from '../steps/03-issue.ts';
 import { defaultState } from '../lib/store.ts';
 import type { Api } from '../lib/abillio.ts';
 
@@ -19,10 +19,11 @@ test('draft then issue, each with its own idempotency key, kept across calls', a
   const calls: { method: string; path: string; body: unknown; key: string | undefined }[] = [];
   const api = (async (method: string, path: string, body: unknown, opts?: { idempotencyKey?: string }) => {
     calls.push({ method, path, body, key: opts?.idempotencyKey });
-    return invoiceOut(path.endsWith('/issue') ? 'approved' : 'draft');
+    return invoiceOut(path.endsWith('/issue') ? 'pending' : 'draft');
   }) as Api;
   const state = defaultState();
-  const draft = await draftInvoice(api, state, 'e1', 'c-self', { description: 'Tutoring, October', unit_price: '100.00', currency_code: 'EUR' }, new Date('2026-10-19T10:00:00Z'));
+  const request = invoiceRequest('e1', { description: 'Tutoring, October', unit_price: '100.00', currency_code: 'EUR' }, new Date('2026-10-19T10:00:00Z'));
+  const draft = await draftInvoice(api, state, request, 'c-self');
   assert.deepEqual(draft, { id: 'inv-1', number: 'ACME-0001', status: 'draft', public_url: 'https://new.abillio.dev/invoice/x', total: '100.00', currency: 'EUR' });
   assert.deepEqual(calls[0].body, {
     client_uuid: 'c-self',
@@ -30,9 +31,9 @@ test('draft then issue, each with its own idempotency key, kept across calls', a
     currency_code: 'EUR', issued_date: '2026-10-19', due_date: '2026-11-02', language: 'en',
   });
   const issued = await issueInvoice(api, state, 'e1', 'inv-1');
-  assert.equal(issued.status, 'approved');
+  assert.equal(issued.status, 'pending');
   assert.equal(calls[1].path, '/engagements/e1/invoices/inv-1/issue');
   assert.notEqual(calls[0].key, calls[1].key);
-  await draftInvoice(api, state, 'e1', 'c-self', { description: 'x', unit_price: '1', currency_code: 'EUR' });
+  await draftInvoice(api, state, invoiceRequest('e1', { description: 'x', unit_price: '1', currency_code: 'EUR' }, new Date()), 'c-self');
   assert.equal(calls[2].key, calls[0].key, 'a second draft for the same engagement reuses the key');
 });

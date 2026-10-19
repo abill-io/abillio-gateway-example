@@ -202,3 +202,17 @@ test('a POST or PATCH without an Idempotency-Key is refused before anything is s
   await api('POST', '/clients/', { name: 'Acme' }, { idempotencyKey: 'idem-4' });
   assert.equal(sent, 1);
 });
+
+test('only an enveloped answer below 500 is verified: a bare 409 from the idempotency layer and a 5xx leave the outcome unknown', async () => {
+  const cases: [number, unknown, boolean][] = [
+    [422, { error: { code: 'validation_failed', message: 'Validation failed', field_errors: [{ path: 'items.0.unit_code', message: 'Input should be HUR', code: 'enum' }] } }, true],
+    [409, { detail: 'A request with this idempotency key is still in progress.' }, false],
+    [503, { error: { code: 'service_unavailable', message: 'Try again later' } }, false],
+  ];
+  for (const [status, body, verified] of cases) {
+    await assert.rejects(answering(status, body)('POST', '/x', {}, { idempotencyKey: 'idem-5' }), (err: AbillioError) => {
+      assert.equal(err.verified, verified, `${status}`);
+      return true;
+    });
+  }
+});
