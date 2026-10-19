@@ -16,7 +16,7 @@ import { checkKey, type KeyReport } from './steps/01-key.ts';
 import { findEngagement, onboardingAction, onboardingBody, readSession, returnUrlFor, startOnboarding, type JoinForm } from './steps/02-onboard.ts';
 import { draftInvoice, findSelfClient, invoiceRequest, issueInvoice, pendingRequest } from './steps/03-issue.ts';
 import { DEFAULT_COMPANY, PAYOUT_OUTCOMES, findPayout, fundWallet, payAction, payInvoice, readInvoice, readPayout, simulateAction, simulatePayout } from './steps/04-pay.ts';
-import { connectWebhooks, pollForEvents, sendTestDelivery } from './steps/05-events.ts';
+import { connectWebhooks, pollForEvents, recordPoll, sendTestDelivery } from './steps/05-events.ts';
 import { companyPage } from './views/company.ts';
 import { joinPage } from './views/join.ts';
 import { page } from './views/layout.ts';
@@ -301,29 +301,27 @@ export function createApp(deps: Deps): Hono {
     return c.text('ok', 200);
   });
 
-  // The polling fallback, inside the app so it shares `notifyStored`; off in
-  // tests and whenever webhooks are on. `unref()` keeps it from holding the
-  // process open.
+  // The polling fallback runs inside the app so it shares `notifyStored`. It
+  // is off whenever webhooks are on, and in the tests unless one drives it;
+  // `unref()` keeps it from holding the process open. One tick at a time:
+  // behind a slow Abillio a tick would otherwise start while the last one is
+  // still out, and two would write what they found over each other.
   if (deps.pollIntervalMs !== null) {
+    let running = false;
     const timer = setInterval(async () => {
-      const state = deps.state.load();
+      if (running) return;
+      running = true;
       try {
-        const fresh = await pollForEvents(deps.api, state);
-        if (fresh.length) {
-          // Guarded: the poll's copy may be older than what a route stored
-          // meanwhile (a re-join, a new invoice, a start over), so it only
-          // updates the rows it polled and appends only this poll's events,
-          // each once; anything else in its copy may be gone from the store
-          // on purpose.
-          deps.state.update(s => {
-            if (state.invoice && s.invoice?.id === state.invoice.id) s.invoice = state.invoice;
-            if (state.payout && s.payout?.id === state.payout.id) s.payout = state.payout;
-            for (const e of fresh) if (!e.dedupe_key || !s.events.some(x => x.dedupe_key === e.dedupe_key)) s.events.push(e);
-          });
-          notifyStored();
-        }
+        const found = await pollForEvents(deps.api, deps.state.load(), deps.now);
+        // Written onto the state as it is by now, which the routes may have
+        // moved on meanwhile (recordPoll says what it may write).
+        let wrote = false;
+        if (found.events.length || found.changes.length) deps.state.update(s => { wrote = recordPoll(s, found); });
+        if (wrote) notifyStored();
       } catch (err) {
         console.warn('poll failed:', (err as Error).message);
+      } finally {
+        running = false;
       }
     }, deps.pollIntervalMs);
     timer.unref();

@@ -5,6 +5,7 @@
 import { randomBytes, randomUUID } from 'node:crypto';
 import type { Api } from '../lib/abillio.ts';
 import { idempotencyKeyFor, type Keyed, type State, type Store, type StoredEvent } from '../lib/store.ts';
+import { readSession } from './02-onboard.ts';
 import { readInvoice, readPayout } from './04-pay.ts';
 
 export const SUBSCRIBED_EVENTS = [
@@ -32,9 +33,10 @@ export const SUBSCRIBED_EVENTS = [
 //   Abillio refuses for good (409). A refusal in Abillio's envelope clears it
 //   with the key, so the next press is a new attempt;
 // - a move, when the channel points elsewhere (the tunnel restarted on a new
-//   URL). A move is an event, not a state: a settled one spends its key
-//   (`once`), so going back to an earlier URL moves the channel again instead
-//   of replaying the first move;
+//   URL). A PATCH that sets the destination comes out the same however often
+//   it is sent, so each press sends it under a fresh key, like the test
+//   delivery: there is nothing to replay, and going back to an earlier URL
+//   always moves the channel;
 // - the subscription naming every event, for the stored channel.
 export async function connectWebhooks(api: Api, keyed: Keyed, store: Store, publicUrl: string, secret: string = randomBytes(32).toString('hex')): Promise<void> {
   const state = store.load();
@@ -54,8 +56,7 @@ export async function connectWebhooks(api: Api, keyed: Keyed, store: Store, publ
   }
   if (webhook.url !== url) {
     const { channel_id, secret: current } = webhook;
-    const action = `webhook:patch:${url}`;
-    await keyed(state, action, () => api('PATCH', `/accounts/notifications/channels/${encodeURIComponent(channel_id)}`, { destination: url, secret: current }, { idempotencyKey: idempotencyKeyFor(state, action) }), { once: true });
+    await api('PATCH', `/accounts/notifications/channels/${encodeURIComponent(channel_id)}`, { destination: url, secret: current }, { idempotencyKey: randomUUID() });
     webhook = store.update(s => { if (s.webhook?.channel_id === channel_id) s.webhook.url = url; }).webhook ?? { ...webhook, url };
   }
   if (!webhook.subscription_id) {
@@ -75,18 +76,34 @@ export async function sendTestDelivery(api: Api, channelId: string): Promise<voi
   await api('POST', `/accounts/notifications/channels/${encodeURIComponent(channelId)}/test`, undefined, { idempotencyKey: randomUUID() });
 }
 
-// The same reads the steps make, compared with what the state remembers.
-// Each change is reported under the name the webhook would have used, so the
-// page reads the same with or without a public URL. A payout status no
-// webhook announces (approved, or pending again after a return) is reported
-// as `poll.payout.status_changed`, the sample's own name, so it never passes
-// for an event Abillio sends. Each read stands alone: one that fails is
-// logged, and the others still report what they found.
-export async function pollForEvents(api: Api, state: State): Promise<StoredEvent[]> {
-  const out: StoredEvent[] = [];
-  const now = () => new Date().toISOString();
+export type RowChange = { kind: 'invoice' | 'payout'; id: string; from: string; to: string };
+export type PollResult = { events: StoredEvent[]; changes: RowChange[] };
+
+// The webhook's name for a payout's move, as the backend announces it: a
+// return (a paid or processing payout back at pending) is
+// `engagement.payout.failed` with status pending. A move no webhook announces
+// (to approved, say) gets the sample's own name, so it never passes for an
+// event Abillio sends.
+function payoutEventName(from: string, to: string): string {
+  if (to === 'paid') return 'engagement.payout.completed';
+  if (to === 'processing') return 'engagement.payout.processing';
+  if (to === 'rejected') return 'engagement.payout.failed';
+  if (to === 'pending' && (from === 'paid' || from === 'processing')) return 'engagement.payout.failed';
+  return 'poll.payout.status_changed';
+}
+
+// The same reads the steps make, compared with what the state remembers. The
+// poll writes nothing: it returns the events, named as the webhook names them
+// so the page reads the same with or without a public URL, and each row's
+// status change, for the caller to record (`recordPoll`). A draft invoice is
+// the issue route's, which alone turns it into an issued one and stores its
+// number, so the poll leaves it alone. Each read stands alone: one that
+// fails is logged once, and the others still report what they found.
+export async function pollForEvents(api: Api, state: State, now: () => number = Date.now): Promise<PollResult> {
+  const found: PollResult = { events: [], changes: [] };
   const f = state.freelancer;
-  if (!f) return out;
+  if (!f) return found;
+  const event = (event_type: string, data: Record<string, unknown>, dedupe_key: string): StoredEvent => ({ received_at: new Date(now()).toISOString(), event_type, data, via: 'poll', dedupe_key });
   const tryRead = async <T>(what: string, read: () => Promise<T>): Promise<T | null> => {
     try {
       return await read();
@@ -96,29 +113,48 @@ export async function pollForEvents(api: Api, state: State): Promise<StoredEvent
     }
   };
   const seen = (type: string, marker: string) => state.events.some(e => e.via === 'poll' && e.event_type === type && e.dedupe_key === marker);
-  const session = await tryRead('the session read', () => api<{ state: string; can_be_paid: boolean }>('GET', `/onboarding/sessions/${encodeURIComponent(f.session_id)}`));
+  const session = await tryRead('the session read', () => readSession(api, f.session_id));
   if (session?.can_be_paid && !seen('engagement.onboarding.completed', f.session_id)) {
-    out.push({ received_at: now(), event_type: 'engagement.onboarding.completed', data: { session_id: f.session_id, can_be_paid: true, purpose: 'onboarding' }, via: 'poll', dedupe_key: f.session_id });
+    found.events.push(event('engagement.onboarding.completed', { session_id: f.session_id, can_be_paid: true, purpose: 'onboarding' }, f.session_id));
   }
   const engagementId = f.engagement_id;
   const invoice = state.invoice;
-  if (engagementId && invoice) {
+  if (engagementId && invoice && invoice.status !== 'draft') {
     const read = await tryRead('the invoice read', () => readInvoice(api, invoice.id));
     if (read && read.status !== invoice.status) {
-      const type = read.status === 'paid' ? 'engagement.invoice.paid' : 'engagement.invoice.status_changed';
-      out.push({ received_at: now(), event_type: type, data: { invoice_uuid: invoice.id, old_status: invoice.status, new_status: read.status }, via: 'poll', dedupe_key: `${invoice.id}:${read.status}` });
-      invoice.status = read.status;
+      found.events.push(event(read.status === 'paid' ? 'engagement.invoice.paid' : 'engagement.invoice.status_changed', { invoice_uuid: invoice.id, old_status: invoice.status, new_status: read.status }, `${invoice.id}:${read.status}`));
+      found.changes.push({ kind: 'invoice', id: invoice.id, from: invoice.status, to: read.status });
     }
   }
   const payout = state.payout;
   if (engagementId && payout) {
     const read = await tryRead('the payout read', () => readPayout(api, engagementId, payout.id));
     if (read && read.status !== payout.status) {
-      const type = read.status === 'paid' ? 'engagement.payout.completed' : read.status === 'processing' ? 'engagement.payout.processing' : read.status === 'rejected' ? 'engagement.payout.failed' : 'poll.payout.status_changed';
-      out.push({ received_at: now(), event_type: type, data: { payout_uuid: payout.id, status: read.status }, via: 'poll', dedupe_key: `${payout.id}:${read.status}` });
-      payout.status = read.status;
+      found.events.push(event(payoutEventName(payout.status, read.status), { payout_uuid: payout.id, status: read.status }, `${payout.id}:${read.status}`));
+      found.changes.push({ kind: 'payout', id: payout.id, from: payout.status, to: read.status });
     }
   }
-  state.events.push(...out);
-  return out;
+  return found;
+}
+
+// What a poll found, written onto the state as it is now, which may have
+// moved on while the reads were out (an issue, a payment, a simulation, a
+// start over). A row takes only its new status, and only while it is still
+// the row the poll compared, at the status it compared from: the pay route's
+// guard. The rest of a row (the number an issue stored) is the routes' to
+// write. Events are appended once each. Answers whether anything was written.
+export function recordPoll(s: State, found: PollResult): boolean {
+  let wrote = false;
+  for (const change of found.changes) {
+    const row = change.kind === 'invoice' ? s.invoice : s.payout;
+    if (row?.id !== change.id || row.status !== change.from) continue;
+    row.status = change.to;
+    wrote = true;
+  }
+  for (const e of found.events) {
+    if (s.events.some(x => x.dedupe_key === e.dedupe_key)) continue;
+    s.events.push(e);
+    wrote = true;
+  }
+  return wrote;
 }

@@ -5,22 +5,7 @@ import { createApp } from '../server.ts';
 import { Trace } from '../lib/trace.ts';
 import { defaultState, type State } from '../lib/store.ts';
 import { AbillioError, type Api } from '../lib/abillio.ts';
-
-export function memoryState(initial: State = defaultState()) {
-  let current = initial;
-  return { load: () => current, update: (fn: (s: State) => void) => { fn(current); return current; } };
-}
-
-// Like data/state.json: every load() is a fresh copy, so a key minted on the
-// copy a route loaded is lost unless that route's update() writes it back.
-// memoryState hands out one shared object and cannot show that.
-export function fileLikeState(initial: State = defaultState()) {
-  let saved = structuredClone(initial);
-  return {
-    load: () => structuredClone(saved),
-    update: (fn: (s: State) => void) => { const next = structuredClone(saved); fn(next); saved = next; return structuredClone(next); },
-  };
-}
+import { fileLikeState, memoryState } from './helpers.ts';
 
 export function appWith(api: Api, state = memoryState(), publicUrl: string | null = null, onStored: () => void = () => {}, now: () => number = Date.now, pollIntervalMs: number | null = null) {
   const trace = new Trace();
@@ -504,29 +489,45 @@ test('the webhook receiver stores a correctly signed delivery once, refuses a ba
   initial.webhook = { channel_id: 'ch1', subscription_id: 'sub1', secret: v.secret, url: 'https://x/webhooks/abillio' };
   const stored: string[] = [];
   const { app, state } = appWith((async () => ({})) as Api, memoryState(initial), 'https://x', () => stored.push('refresh'), () => Number(v.timestamp) * 1000 + 1000);
-  const deliver = (sig: string) => app.request('/webhooks/abillio', { method: 'POST', body: v.body, headers: { 'content-type': 'application/json', 'x-timestamp': v.timestamp, 'x-signature': sig } });
+  const deliver = (sig: string, timestamp: string = v.timestamp) => app.request('/webhooks/abillio', { method: 'POST', body: v.body, headers: { 'content-type': 'application/json', 'x-timestamp': timestamp, 'x-signature': sig } });
   assert.equal((await deliver(v.signature_header)).status, 200);
   assert.equal((await deliver(v.signature_header)).status, 200, 'a retry is answered 200');
   assert.equal(state.load().events.length, 1, 'but stored once');
   assert.equal(state.load().events[0].event_type, 'engagement.invoice.paid');
   assert.equal((await deliver('t=1,v1=00')).status, 401);
+  assert.equal((await deliver(v.signature_header, String(Number(v.timestamp) - 400))).status, 400, 'a delivery older than 300 s is refused before its signature is checked');
   assert.equal(state.load().events.length, 1);
   assert.equal(stored.length, 1);
 });
 
-test('without a PUBLIC_URL the connect button is disabled and the receiver answers 404-like 503', async () => {
-  const { app } = appWith((async () => ({})) as Api);
+test('without a PUBLIC_URL there is no connect button, a connect press explains why and calls nothing, and the receiver answers 503', async () => {
+  let calls = 0;
+  const { app } = appWith((async () => { calls++; return {}; }) as Api);
   const html = await (await app.request('/')).text();
-  assert.ok(html.includes('PUBLIC_URL'));
-  assert.equal((await app.request('/webhooks/abillio', { method: 'POST', body: '{}' })).status, 503);
+  assert.ok(html.includes('PUBLIC_URL') && !html.includes('Connect webhooks'));
+  assert.ok((await (await app.request('/steps/events/connect', { method: 'POST' })).text()).includes('Set PUBLIC_URL (npm run tunnel prints how) and restart to receive webhooks.'));
+  assert.equal(calls, 0);
+  const refused = await app.request('/webhooks/abillio', { method: 'POST', body: '{}' });
+  assert.equal(refused.status, 503);
+  assert.equal(await refused.text(), 'webhooks not connected: set PUBLIC_URL and press Connect');
 });
 
-test('a form POST from another origin is refused, a webhook delivery is not', async () => {
+test('a form POST from another origin is refused; one from this origin is not, nor is a JSON delivery that carries a foreign Origin', async () => {
   const { app } = appWith((async () => ({})) as Api);
   const foreign = await app.request('http://localhost:4000/steps/key', { method: 'POST', headers: { origin: 'https://evil.example', 'content-type': 'application/x-www-form-urlencoded' }, body: '' });
   assert.equal(foreign.status, 403);
   const own = await app.request('http://localhost:4000/steps/key', { method: 'POST', headers: { origin: 'http://localhost:4000', 'content-type': 'application/x-www-form-urlencoded' }, body: '' });
   assert.notEqual(own.status, 403);
+  const delivery = await app.request('http://localhost:4000/webhooks/abillio', { method: 'POST', headers: { origin: 'https://evil.example', 'content-type': 'application/json' }, body: '{}' });
+  assert.equal(delivery.status, 503, 'a JSON body is not a form: the guard leaves it to the receiver, which judges it by its signature');
+});
+
+test('what a delivery says is escaped on the page: neither its event type nor its payload can add markup', async () => {
+  const initial = defaultState();
+  initial.events = [{ received_at: '2026-10-19T10:00:00.000Z', event_type: '<script>alert(1)</script>', data: { note: '<img src=x onerror=alert(2)>' }, via: 'webhook', dedupe_key: 'k' }];
+  const html = await (await appWith((async () => ({})) as Api, memoryState(initial)).app.request('/')).text();
+  assert.ok(!html.includes('<script>alert(1)') && !html.includes('<img src=x'));
+  assert.ok(html.includes('&lt;script&gt;alert(1)&lt;/script&gt;'));
 });
 
 test('two copies of a delivery that arrive together are stored once, and the page is told once', async () => {
@@ -624,7 +625,7 @@ test('a channel refused in its envelope: the next press is a new attempt, with a
   assert.equal(state.load().webhook?.subscription_id, 'sub1');
 });
 
-test('a move is an event: each settled PATCH spends its key, so going back and forth moves the channel every time', async () => {
+test('each move is a PATCH under a fresh key, so going back and forth moves the channel every time', async () => {
   const fake = fakeNotificationsApi();
   const connected = defaultState();
   connected.webhook = { channel_id: 'ch1', subscription_id: 'sub1', secret: 'a'.repeat(64), url: `${A}/webhooks/abillio` };
@@ -658,4 +659,79 @@ test('a poll writes back only what it found: an event the store no longer has do
   await stored;
   assert.deepEqual(store.load().events.filter(e => e.dedupe_key === 'before-the-reset'), []);
   assert.deepEqual({ invoice: store.load().invoice, payout: store.load().payout }, { invoice: null, payout: null }, 'nor does a row it read');
+});
+
+// A poll tick that lands while the issue call is out, both ways round. The
+// draft answers with no number, as staging does; the issue with the real one.
+for (const order of ['the tick finishes first', 'the route finishes first'] as const) {
+  test(`a poll tick during the issue call never loses the issued number (${order})`, async t => {
+    t.mock.timers.enable({ apis: ['setInterval'] });
+    const store = fileLikeState(joinedState());
+    const settle = () => new Promise(resolve => setImmediate(resolve));
+    let issued = false;
+    let openGate!: () => void;
+    const gate = new Promise<void>(resolve => { openGate = resolve; });
+    const row = (number: string, status: string) => ({ id: 'inv-1', invoice_number: number, status, public_url: 'https://new.abillio.dev/invoice/inv-1', amounts: { total: { amount: '121.00', currency: 'EUR' } } });
+    const api = (async (method: string, path: string) => {
+      if (method === 'GET' && path === '/accounts/clients/?limit=100') return { count: 1, items: [{ id: 'c-self', name: 'Acme', company_account_id: 'a1' }] };
+      if (method === 'POST' && path === '/engagements/e1/invoices/') return row('', 'draft');
+      if (method === 'POST' && path === '/engagements/e1/invoices/inv-1/issue') {
+        issued = true;
+        t.mock.timers.tick(5000); // the tick lands while the issue answer travels back
+        if (order === 'the tick finishes first') await settle();
+        return row('DEMO-1', 'pending');
+      }
+      if (path === '/onboarding/sessions/s1') return { state: 'in_progress', can_be_paid: false, purpose: 'onboarding', requirements: [] };
+      if (path === '/accounts/invoices/inv-1/') {
+        if (order === 'the route finishes first') await gate;
+        return { id: 'inv-1', status: issued ? 'pending' : 'draft' };
+      }
+      throw new Error(`${method} ${path}`);
+    }) as Api;
+    await pressIssue(appWith(api, store, null, () => {}, Date.now, 5000).app);
+    openGate();
+    await settle();
+    assert.deepEqual({ number: store.load().invoice?.number, status: store.load().invoice?.status }, { number: 'DEMO-1', status: 'pending' });
+  });
+}
+
+test('a poll never sets back what a route moved on meanwhile: it writes a status only over the one it compared', async t => {
+  t.mock.timers.enable({ apis: ['setInterval'] });
+  const store = fileLikeState(issuedState('pending', { id: 'p1', status: 'pending' }));
+  let told!: () => void;
+  const stored = new Promise<void>(resolve => { told = resolve; });
+  const api = (async (_m: string, path: string) => {
+    if (path === '/onboarding/sessions/s1') return { state: 'in_progress', can_be_paid: false, purpose: 'onboarding', requirements: [] };
+    if (path === '/accounts/invoices/inv-1/') return { id: 'inv-1', status: 'paid' };
+    if (path === '/engagements/e1/payouts/p1') {
+      // While the poll reads, the simulate route stores the payout it settled.
+      store.update(s => { s.payout = { id: 'p1', status: 'paid' }; });
+      return { id: 'p1', status: 'processing' };
+    }
+    throw new Error(path);
+  }) as Api;
+  appWith(api, store, null, () => told(), Date.now, 5000);
+  t.mock.timers.tick(5000);
+  await stored;
+  assert.deepEqual(store.load().payout, { id: 'p1', status: 'paid' }, 'the payout the route settled is not set back to what the poll read');
+  assert.equal(store.load().invoice?.status, 'paid', 'the invoice, still where the poll found it, takes the new status');
+});
+
+test('one poll tick at a time: a tick that finds the last one still waiting on Abillio skips', async t => {
+  t.mock.timers.enable({ apis: ['setInterval'] });
+  let reads = 0;
+  let answer!: () => void;
+  const slow = new Promise<void>(resolve => { answer = resolve; });
+  const api = (async (_m: string, path: string) => {
+    if (path === '/onboarding/sessions/s1') { reads++; await slow; return { state: 'in_progress', can_be_paid: false, purpose: 'onboarding', requirements: [] }; }
+    throw new Error(path);
+  }) as Api;
+  appWith(api, fileLikeState(joinedState()), null, () => {}, Date.now, 5000);
+  t.mock.timers.tick(5000);
+  t.mock.timers.tick(5000);
+  assert.equal(reads, 1, 'the second tick found the first still out');
+  answer();
+  await new Promise(resolve => setImmediate(resolve));
+  t.mock.timers.tick(5000);
+  assert.equal(reads, 2, 'once it is back, the next tick polls again');
 });
