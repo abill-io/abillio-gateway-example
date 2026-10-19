@@ -732,7 +732,7 @@ def abillio(method, path, payload=None, idempotency_key=None):
         'Accept': 'application/json',
         # Cloudflare in front of Abillio refuses Python's urllib default
         # User-Agent (error 1010); name your integration in every client.
-        'User-Agent': 'acme-tutors/1.0',
+        'User-Agent': 'brightline-tutors/1.0',
     }
     if ACCOUNT:
         headers['X-Account'] = ACCOUNT

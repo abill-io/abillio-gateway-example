@@ -12,7 +12,7 @@ export function page(title: string, body: string): string {
 <link rel="stylesheet" href="/public/style.css">
 </head>
 <body>
-<header class="top"><a href="/">Acme Tutors — back office</a> <a href="/join">The freelancer's page</a> <a href="https://backend.abillio.dev/company-api/" target="_blank" rel="noopener">Abillio company API guide</a></header>
+<header class="top"><a href="/">Brightline Tutors — back office</a> <a href="/join">The freelancer's page</a> <a href="https://backend.abillio.dev/company-api/" target="_blank" rel="noopener">Abillio company API guide</a></header>
 ${body}
 <script src="/public/app.js"></script>
 </body>

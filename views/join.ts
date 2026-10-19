@@ -3,9 +3,9 @@ import { esc, page } from './layout.ts';
 
 export function joinPage(state: State, abillioOrigin: string | null): string {
   const f = state.freelancer;
-  return page('Join Acme Tutors', `<main class="one-col">
+  return page('Join Brightline Tutors', `<main class="one-col">
     <section class="panel">
-      <h1>Teach with Acme Tutors</h1>
+      <h1>Teach with Brightline Tutors</h1>
       <p>This is the partner's own sign-up page. The form posts to the partner's server, which mints an Abillio onboarding session; the browser only opens the link Abillio returns.</p>
       <form id="join" data-origin="${esc(abillioOrigin ?? '')}">
         <label>First name <input name="first_name" required value="Anna"></label>

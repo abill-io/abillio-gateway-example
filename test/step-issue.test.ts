@@ -9,9 +9,9 @@ const invoiceOut = (status: string) => ({ id: 'inv-1', invoice_number: 'ACME-000
 test('the self-client is the row whose company_account_id is the account itself', async () => {
   const api = (async () => ({ count: 2, items: [
     { id: 'c-third', name: 'Brand Ltd', company_account_id: null },
-    { id: 'c-self', name: 'Acme Tutors SIA', company_account_id: 'a1' },
+    { id: 'c-self', name: 'Brightline Tutors SIA', company_account_id: 'a1' },
   ] })) as Api;
-  assert.deepEqual(await findSelfClient(api, 'a1'), { id: 'c-self', name: 'Acme Tutors SIA' });
+  assert.deepEqual(await findSelfClient(api, 'a1'), { id: 'c-self', name: 'Brightline Tutors SIA' });
   await assert.rejects(findSelfClient((async () => ({ count: 0, items: [] })) as Api, 'a1'), /no self-client/);
 });
 
