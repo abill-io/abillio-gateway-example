@@ -84,6 +84,11 @@ export function idempotencyKeyFor(state: State, action: string): string {
   return minted;
 }
 
+// The shape of createApp's keyed() helper (server.ts): a step that sends a
+// keyed call takes it, so the route alone decides when a key is claimed and
+// when it is forgotten.
+export type Keyed = <T>(state: State, action: string, call: () => Promise<T>) => Promise<T>;
+
 // Abillio keeps the key of a call it answered with an error spent: a retry
 // with that key is a 409. Forgetting it makes the next press mint a new key,
 // so it is a new attempt.

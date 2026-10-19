@@ -1,0 +1,60 @@
+import { test } from 'node:test';
+import assert from 'node:assert/strict';
+import { SUBSCRIBED_EVENTS, connectWebhooks, pollForEvents, sendTestDelivery } from '../steps/05-events.ts';
+import type { Api } from '../lib/abillio.ts';
+import { defaultState, idempotencyKeyFor, type Keyed } from '../lib/store.ts';
+
+// The step tests check the calls and their keys; the claim-before-call and
+// forget-on-verified-failure behaviour of the real keyed() is server.ts's and
+// is covered there.
+const passThrough: Keyed = (state, action, call) => { idempotencyKeyFor(state, action); return call(); };
+
+test('the subscription lists every engagement event the guide names', () => {
+  for (const e of ['engagement.onboarding.started', 'engagement.onboarding.completed', 'engagement.kyc.updated', 'engagement.requirements_updated', 'engagement.commission.accepted', 'engagement.commission.credited', 'engagement.commission.reversed', 'engagement.invoice.confirmed', 'engagement.invoice.status_changed', 'engagement.invoice.paid', 'engagement.payout.processing', 'engagement.payout.completed', 'engagement.payout.failed', 'bulk_invoice.completed']) {
+    assert.ok(SUBSCRIBED_EVENTS.includes(e), e);
+  }
+});
+
+test('connectWebhooks creates a channel with a 64-hex secret and a subscription; a second call with a new url patches the channel', async () => {
+  const calls: { method: string; path: string; body: Record<string, unknown> }[] = [];
+  const api = (async (method: string, path: string, body: Record<string, unknown>) => {
+    calls.push({ method, path, body });
+    if (path === '/accounts/notifications/channels/') return { id: 'ch1' };
+    if (path === '/accounts/notifications/subscriptions/') return { id: 'sub1' };
+    if (path === '/accounts/notifications/channels/ch1') return { id: 'ch1' };
+    if (method === 'POST' && path === '/accounts/notifications/channels/ch1/test') return { success: true };
+    throw new Error(path);
+  }) as Api;
+  const state = defaultState();
+  const first = await connectWebhooks(api, passThrough, state, 'https://a.trycloudflare.com');
+  assert.match(first.secret, /^[0-9a-f]{64}$/);
+  assert.equal(first.url, 'https://a.trycloudflare.com/webhooks/abillio');
+  assert.equal(calls[0].body.kind, 'webhook');
+  assert.equal(calls[0].body.secret, first.secret);
+  assert.deepEqual(calls[1].body.channel_uuids, ['ch1']);
+  assert.deepEqual(calls[1].body.event_types, SUBSCRIBED_EVENTS);
+  state.webhook = first;
+  const second = await connectWebhooks(api, passThrough, state, 'https://b.trycloudflare.com');
+  assert.equal(second.channel_id, 'ch1');
+  assert.equal(calls.at(-1)?.method, 'PATCH');
+  assert.equal(calls.at(-1)?.body.destination, 'https://b.trycloudflare.com/webhooks/abillio');
+  await sendTestDelivery(api, 'ch1');
+});
+
+test('pollForEvents reports what changed since the stored state, named like the real events', async () => {
+  const state = defaultState();
+  state.freelancer = { email: 'anna@example.com', session_id: 's1', session_url: 'https://new.abillio.dev/s/t', engagement_id: 'e1', servicing_company_slug: 'abillio-ks' };
+  state.invoice = { id: 'inv-1', number: 'A-1', status: 'approved', public_url: 'u' };
+  state.payout = { id: 'p1', status: 'pending' };
+  const api = (async (_m: string, path: string) => {
+    if (path === '/onboarding/sessions/s1') return { state: 'complete', can_be_paid: true, purpose: 'onboarding', requirements: [] };
+    if (path === '/accounts/invoices/inv-1/') return { id: 'inv-1', status: 'paid' };
+    if (path === '/engagements/e1/payouts/p1') return { id: 'p1', status: 'paid' };
+    throw new Error(path);
+  }) as Api;
+  const events = await pollForEvents(api, state);
+  assert.deepEqual(events.map(e => e.event_type), ['engagement.onboarding.completed', 'engagement.invoice.paid', 'engagement.payout.completed']);
+  assert.ok(events.every(e => e.via === 'poll'));
+  const again = await pollForEvents(api, state);
+  assert.deepEqual(again, [], 'nothing changed since the first poll, so nothing is reported');
+});

@@ -5,15 +5,18 @@ import { randomUUID } from 'node:crypto';
 import { serve } from '@hono/node-server';
 import { serveStatic } from '@hono/node-server/serve-static';
 import { Hono } from 'hono';
+import { csrf } from 'hono/csrf';
 import { streamSSE } from 'hono/streaming';
 import { AbillioError, createApi, type Api } from './lib/abillio.ts';
 import { loadEnv } from './lib/env.ts';
 import { forgetIdempotencyKey, loadState, updateState, type State } from './lib/store.ts';
 import { Trace, trace as processTrace } from './lib/trace.ts';
+import { dedupeKey, parseDelivery, verifySignature } from './lib/webhooks.ts';
 import { checkKey, type KeyReport } from './steps/01-key.ts';
 import { findEngagement, onboardingAction, onboardingBody, readSession, returnUrlFor, startOnboarding, type JoinForm } from './steps/02-onboard.ts';
 import { draftInvoice, findSelfClient, invoiceRequest, issueInvoice, pendingRequest } from './steps/03-issue.ts';
 import { DEFAULT_COMPANY, PAYOUT_OUTCOMES, findPayout, fundWallet, payAction, payInvoice, readInvoice, readPayout, simulateAction, simulatePayout } from './steps/04-pay.ts';
+import { connectWebhooks, pollForEvents, sendTestDelivery } from './steps/05-events.ts';
 import { companyPage } from './views/company.ts';
 import { joinPage } from './views/join.ts';
 import { page } from './views/layout.ts';
@@ -36,6 +39,16 @@ export type Deps = {
 
 export function createApp(deps: Deps): Hono {
   const app = new Hono();
+  // The hosted copy is a public page with no login, so a foreign site must not
+  // be able to drive its buttons: Hono's guard refuses a form POST whose
+  // Origin is not this server's own. It ignores JSON bodies, so Abillio's
+  // webhook deliveries (no Origin, application/json) pass untouched. It also
+  // refuses a form POST that carries no Origin at all, which is every client
+  // that is not a browser (curl, a script, the tests), so it only judges what
+  // a browser sent: browsers put Origin, and Sec-Fetch-Site, on every POST, so
+  // no foreign page can make one send neither.
+  const crossSite = csrf();
+  app.use(async (c, next) => (c.req.header('origin') === undefined && c.req.header('sec-fetch-site') === undefined ? next() : crossSite(c, next)));
   let lastKey: KeyReport | null = null;
   const refreshListeners = new Set<() => void>();
   // One place that says "the page should reload": the webhook receiver and
@@ -255,6 +268,70 @@ export function createApp(deps: Deps): Hono {
     } catch (err) { return render(c, err); }
   });
 
+  app.post('/webhooks/abillio', async c => {
+    const state = deps.state.load();
+    if (!state.webhook) return c.text('webhooks not connected: set PUBLIC_URL and press Connect', 503);
+    const raw = Buffer.from(await c.req.arrayBuffer());
+    const verdict = verifySignature(state.webhook.secret, { timestamp: c.req.header('x-timestamp') ?? null, signature: c.req.header('x-signature') ?? null }, raw, deps.now);
+    if (!verdict.ok) {
+      deps.trace.push({ at: new Date(deps.now()).toISOString(), method: 'WEBHOOK', path: '/webhooks/abillio', requestBody: null, status: verdict.status, responseBody: null, idempotencyKey: null, replayed: false, error: `refused: ${verdict.reason}` });
+      return c.text(verdict.reason, verdict.status);
+    }
+    const delivery = parseDelivery(raw);
+    if (!delivery) return c.text('not a delivery', 400);
+    const key = dedupeKey(delivery.event_type, raw);
+    // The test delivery has a constant body and no retries: every press is a
+    // new one on purpose, so it is never deduped. Real events carry their
+    // emission time inside the body, so distinct emissions never collide.
+    if (delivery.event_type === 'channel.test' || !state.events.some(e => e.dedupe_key === key)) {
+      deps.state.update(s => { s.events.push({ received_at: new Date(deps.now()).toISOString(), event_type: delivery.event_type, data: delivery.data, via: 'webhook', dedupe_key: key }); });
+      notifyStored();
+    }
+    return c.text('ok', 200);
+  });
+
+  // The polling fallback, inside the app so it shares `notifyStored`; off in
+  // tests and whenever webhooks are on. `unref()` keeps it from holding the
+  // process open.
+  if (deps.pollIntervalMs !== null) {
+    const timer = setInterval(async () => {
+      const state = deps.state.load();
+      try {
+        const fresh = await pollForEvents(deps.api, state);
+        if (fresh.length) {
+          // Guarded: the poll's copy may be older than what a route stored
+          // meanwhile (a re-join, a new invoice), so it only updates the rows it
+          // polled and appends the events the store does not have yet.
+          deps.state.update(s => {
+            if (state.invoice && s.invoice?.id === state.invoice.id) s.invoice = state.invoice;
+            if (state.payout && s.payout?.id === state.payout.id) s.payout = state.payout;
+            for (const e of state.events) if (!e.dedupe_key || !s.events.some(x => x.dedupe_key === e.dedupe_key)) s.events.push(e);
+          });
+          notifyStored();
+        }
+      } catch (err) {
+        console.warn('poll failed:', (err as Error).message);
+      }
+    }, deps.pollIntervalMs);
+    timer.unref();
+  }
+
+  app.post('/steps/events/connect', async c => {
+    if (!deps.publicUrl) return render(c, new Error('Set PUBLIC_URL (npm run tunnel prints how) and restart to receive webhooks.'));
+    const state = deps.state.load();
+    try {
+      const webhook = await connectWebhooks(deps.api, keyed, state, deps.publicUrl);
+      deps.state.update(s => { s.webhook = webhook; });
+      return render(c);
+    } catch (err) { return render(c, err); }
+  });
+
+  app.post('/steps/events/test', async c => {
+    const state = deps.state.load();
+    if (!state.webhook) return render(c, new Error('Connect webhooks first.'));
+    try { await sendTestDelivery(deps.api, state.webhook.channel_id); return render(c); } catch (err) { return render(c, err); }
+  });
+
   app.get('/back', c => c.html(page('Back', '<main class="one-col"><section class="panel"><h1>Thanks — you can close this window.</h1><p class="muted">Abillio sends the freelancer here when the popup has no opener to post to.</p></section></main>')));
 
   app.get('/api/state', c => c.json(publicState(deps.state.load())));
@@ -272,8 +349,7 @@ export function createApp(deps: Deps): Hono {
     }),
   );
 
-  // Tasks 6–10 add their routes above this line; Task 9 uses `notifyStored`.
-  void notifyStored;
+  // Task 10 adds its routes above this line.
   return app;
 }
 

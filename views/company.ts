@@ -91,8 +91,17 @@ export function payPanel(state: State): string {
   </section>`;
 }
 
-export function placeholderPanel(n: number, title: string): string {
-  return `<section class="panel" id="step-${esc(n)}"><h2>Step ${esc(n)} — ${esc(title)}</h2><p class="muted">Coming in a later task.</p></section>`;
+export function eventsPanel(state: State, publicUrl: string | null): string {
+  const w = state.webhook;
+  const rows = [...state.events].reverse().slice(0, 30).map(e => `<li><code>${esc(e.event_type)}</code> <span class="tag">${esc(e.via)}</span> <small>${esc(e.received_at)}</small>${jsonBlock(e.data)}</li>`).join('');
+  return `<section class="panel" id="step-5"><h2>Step 5 — Hear from Abillio</h2>
+    ${publicUrl
+      ? `<p>Public URL <code>${esc(publicUrl)}</code>. <code>POST /accounts/notifications/channels/</code> + <code>POST /accounts/notifications/subscriptions/</code>; deliveries arrive at <code>/webhooks/abillio</code>, signed.</p>
+         <form method="post" action="/steps/events/connect" class="inline"><button>${w ? 'Reconnect' : 'Connect webhooks'}</button></form>
+         ${w ? `<form method="post" action="/steps/events/test" class="inline"><button>Send a test delivery</button></form><p>Channel <code>${esc(w.channel_id)}</code>, subscription <code>${esc(w.subscription_id)}</code>.</p>` : ''}`
+      : `<p class="muted">No <code>PUBLIC_URL</code>: webhooks are off and the server polls every 5 s instead (<code>npm run tunnel</code> prints how to get a public URL).</p>`}
+    <ul class="events">${rows || '<li class="muted">Nothing received yet.</li>'}</ul>
+  </section>`;
 }
 
 export function companyPage(input: CompanyPageInput): string {
@@ -103,7 +112,7 @@ export function companyPage(input: CompanyPageInput): string {
       ${onboardingPanel(input.state)}
       ${issuePanel(input.state)}
       ${payPanel(input.state)}
-      ${placeholderPanel(5, 'Events')}
+      ${eventsPanel(input.state, input.publicUrl)}
       <section class="panel"><h2>What we store</h2><p class="muted"><code>data/state.json</code> — the fields a real integration keeps in its own database.</p>${jsonBlock(input.state)}</section>
     </div>
     <aside>${tracePanel(input.trace)}</aside>

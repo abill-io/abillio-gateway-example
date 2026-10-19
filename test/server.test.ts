@@ -1,5 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import { createApp } from '../server.ts';
 import { Trace } from '../lib/trace.ts';
 import { defaultState, type State } from '../lib/store.ts';
@@ -491,4 +492,37 @@ test('the pay and simulate answers are written only while the invoice and payout
   store.update(s => { s.invoice = issuedState('paid').invoice; s.payout = { id: 'p1', status: 'pending' }; });
   await pressSimulate(app, 'paid');
   assert.equal(state.load().payout, null, "nor is the previous payout's read");
+});
+
+// --- Step 5 -------------------------------------------------------------------
+
+test('the webhook receiver stores a correctly signed delivery once, refuses a bad one, and marks the page for refresh', async () => {
+  const v = JSON.parse(readFileSync(new URL('./vectors.json', import.meta.url), 'utf8')).webhook;
+  const initial = defaultState();
+  initial.webhook = { channel_id: 'ch1', subscription_id: 'sub1', secret: v.secret, url: 'https://x/webhooks/abillio' };
+  const stored: string[] = [];
+  const { app, state } = appWith((async () => ({})) as Api, memoryState(initial), 'https://x', () => stored.push('refresh'), () => Number(v.timestamp) * 1000 + 1000);
+  const deliver = (sig: string) => app.request('/webhooks/abillio', { method: 'POST', body: v.body, headers: { 'content-type': 'application/json', 'x-timestamp': v.timestamp, 'x-signature': sig } });
+  assert.equal((await deliver(v.signature_header)).status, 200);
+  assert.equal((await deliver(v.signature_header)).status, 200, 'a retry is answered 200');
+  assert.equal(state.load().events.length, 1, 'but stored once');
+  assert.equal(state.load().events[0].event_type, 'engagement.invoice.paid');
+  assert.equal((await deliver('t=1,v1=00')).status, 401);
+  assert.equal(state.load().events.length, 1);
+  assert.equal(stored.length, 1);
+});
+
+test('without a PUBLIC_URL the connect button is disabled and the receiver answers 404-like 503', async () => {
+  const { app } = appWith((async () => ({})) as Api);
+  const html = await (await app.request('/')).text();
+  assert.ok(html.includes('PUBLIC_URL'));
+  assert.equal((await app.request('/webhooks/abillio', { method: 'POST', body: '{}' })).status, 503);
+});
+
+test('a form POST from another origin is refused, a webhook delivery is not', async () => {
+  const { app } = appWith((async () => ({})) as Api);
+  const foreign = await app.request('http://localhost:4000/steps/key', { method: 'POST', headers: { origin: 'https://evil.example', 'content-type': 'application/x-www-form-urlencoded' }, body: '' });
+  assert.equal(foreign.status, 403);
+  const own = await app.request('http://localhost:4000/steps/key', { method: 'POST', headers: { origin: 'http://localhost:4000', 'content-type': 'application/x-www-form-urlencoded' }, body: '' });
+  assert.notEqual(own.status, 403);
 });
