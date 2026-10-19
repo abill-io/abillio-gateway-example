@@ -21,6 +21,16 @@ test('GET / renders the company page with the five step panels', async () => {
   for (const title of ['Step 1', 'Step 2', 'Step 3', 'Step 4', 'Step 5']) assert.ok(html.includes(title), title);
 });
 
+test('GET /healthz answers ok without touching Abillio or the state', async () => {
+  // A liveness probe runs every few seconds: neither an Abillio call nor a
+  // read of data/state.json may decide whether the container is alive.
+  const untouchable = { load: () => { throw new Error('must not be read'); }, update: () => { throw new Error('must not be written'); } };
+  const { app } = appWith((async () => { throw new Error('must not be called'); }) as Api, untouchable);
+  const res = await app.request('/healthz');
+  assert.equal(res.status, 200);
+  assert.equal(await res.text(), 'ok');
+});
+
 test('the progress line and the rail read where the walk stands off the stored state', async () => {
   const joined = (): State => {
     const s = sandboxState();

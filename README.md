@@ -50,6 +50,27 @@ signer), `npm run typecheck` runs `tsc`, `npm run smoke` runs the story without 
 browser (see [The smoke test](#the-smoke-test)) and `npm run tunnel` prints how
 to give this machine a public URL.
 
+## Run with Docker
+
+```bash
+docker build -t abillio-gateway-example .
+docker run --rm -p 4000:4000 --env-file .env -v gateway-state:/data abillio-gateway-example
+```
+
+The image is published for every `v*` tag as
+`ghcr.io/abill-io/abillio-gateway-example:<tag>` (and `:latest`), for amd64 and
+arm64. It runs the same `server.ts` as `npm start`, as the `node` user, and keeps
+the state in the `/data` volume (`STATE_FILE=/data/state.json`), so a directory
+mounted there has to be writable by uid 1000. Docker reads `.env` literally:
+leave the values unquoted. With no `ABILLIO_API_KEY_ID` in the environment the
+container idles and says so, rather than failing to start.
+
+## Hosted demo
+
+Abillio runs one instance of this repo at https://demo.abillio.dev against a
+sandbox account, with real webhooks. Everyone sees the same walk; **Start over**
+resets it. It is the same code as this repo, pinned to a tag.
+
 ## Keep it safe
 
 Two files hold secrets, and neither belongs in a repository. `.env` holds

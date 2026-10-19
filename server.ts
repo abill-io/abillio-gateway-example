@@ -154,6 +154,9 @@ export function createApp(deps: Deps): Hono {
     });
   }
 
+  // Liveness for the container orchestrator: no Abillio call, no state read.
+  app.get('/healthz', c => c.text('ok'));
+
   app.get('/', c => render(c));
 
   app.post('/steps/key', async c => {
