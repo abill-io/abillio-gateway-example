@@ -6,7 +6,7 @@ their name, pays it from its wallet, the payout goes out, and webhooks tell the
 company what happened. Every call to Abillio is shown on the page as it is made.
 A hosted copy runs at https://demo.abillio.dev.
 
-![The back office after a full walk: the five steps on the left, every call to Abillio on the right (the freelancer's e-mail masked for the picture)](docs/back-office.png)
+![The Brightline Tutors back office after a full walk: the five steps on a numbered rail on the left, every call to Abillio and what the sample stores in the console on the right (the freelancer's e-mail masked for the picture)](docs/back-office.png)
 
 It is one Node process with two pages: the company's back office at `/` and the
 freelancer's sign-up page at `/join`. It talks to Abillio's company API, signs
@@ -82,8 +82,12 @@ same functions in the same order.
 records. `lib/store.ts` reads and writes `data/state.json`, always whole,
 through a temporary file and a rename, so a crash mid-write leaves the previous
 version intact. `lib/webhooks.ts` verifies and deduplicates deliveries. `views/`
-renders the two pages, and `public/` holds the popup script, the page script and
-the stylesheet.
+renders the two pages: the five steps on a numbered rail, with the progress line
+in the top bar read off the stored state, and the trace in a console beside
+them. `public/` holds the popup script, the page script and the stylesheet, plain
+CSS with no build. The one thing the pages load from elsewhere is three fonts
+from Google Fonts (the font links in `views/layout.ts`); without them the
+system fonts take over.
 
 The right-hand column of the back office, **What we sent to Abillio**, is the
 trace of the last fifty calls, newest first: method, path, request body, status
@@ -322,7 +326,7 @@ The step writes `freelancer: { email, session_id, session_url, engagement_id,
 servicing_company_slug }`. The serving company decides which balance the
 company's payment draws on in step 4.
 
-![The freelancer's page after the popup closed](docs/join.png)
+![Brightline Tutors' sign-up page after the popup closed: the form on the left, the session status Abillio reports on the right](docs/join.png)
 
 In the sandbox the address is never looked up, written to or mailed: the
 session creates a sandbox freelancer who walks every step a newcomer does.
@@ -641,9 +645,9 @@ the one you sent; a 400 means the clock or a replayed old delivery.
 
 ## Start over
 
-**Start over** (top of the back office, after a confirmation) calls
-`POST /accounts/sandbox/reset` under a fresh key, which Abillio answers with
-`{ "ok": true }` after putting the sandbox's own demo data back as it was
+**Start over** (in the top bar, beside the progress line, after a confirmation)
+calls `POST /accounts/sandbox/reset` under a fresh key, which Abillio answers
+with `{ "ok": true }` after putting the sandbox's own demo data back as it was
 seeded. The freelancers you onboarded, their engagements, invoices and payouts
 are not demo data and stay on Abillio. The sample then forgets the walk:
 `data/state.json` goes back to empty except the account the key reaches (it

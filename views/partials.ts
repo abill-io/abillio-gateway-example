@@ -1,6 +1,54 @@
+import type { State } from '../lib/store.ts';
 import type { TraceEntry } from '../lib/trace.ts';
 import { AbillioError } from '../lib/abillio.ts';
+import { issueStage } from '../steps/03-issue.ts';
 import { esc } from './layout.ts';
+
+export type StepStatus = 'done' | 'current' | 'upcoming';
+
+// Where the walk stands, read off the stored state the way the panels gate
+// their buttons: the key check stored the account (1), the freelancer has an
+// engagement (2), the invoice is past its draft (3) and paid (4), and Abillio
+// has told us something, by webhook or poll (5). The first step not done is
+// the current one; a later step can be done before it (events come in while
+// the freelancer onboards).
+export function stepStatuses(state: State): StepStatus[] {
+  const done = [
+    Boolean(state.account),
+    Boolean(state.freelancer?.engagement_id),
+    issueStage(state) === 'issued',
+    state.invoice?.status === 'paid',
+    state.events.length > 0,
+  ];
+  const current = done.indexOf(false);
+  return done.map((d, i) => (d ? 'done' : i === current ? 'current' : 'upcoming'));
+}
+
+const STATUS_LABEL: Record<StepStatus, string> = { done: 'Done', current: 'Up next', upcoming: 'Not yet' };
+
+// A step panel's head: its title, and where it stands in words, so the status
+// does not rest on the rail marker's colour alone.
+export function stepHead(n: number, title: string, status: StepStatus): string {
+  return `<div class="step-head"><h2 id="step-${esc(n)}-title">${esc(title)}</h2><span class="step-status">${esc(STATUS_LABEL[status])}</span></div>`;
+}
+
+const OK = new Set(['available', 'paid', 'complete', 'completed']);
+const BAD = new Set(['forbidden', 'unavailable', 'rejected', 'returned', 'failed', 'cancelled', 'canceled', 'expired', 'overdue']);
+
+// A state or status Abillio answered, as a tag: what went through reads in
+// the accent, what failed or is refused in red, anything under way in gray.
+export function stateTag(value: string): string {
+  const tone = OK.has(value) ? 'ok' : BAD.has(value) ? 'bad' : 'neutral';
+  return `<code class="state is-${tone}">${esc(value)}</code>`;
+}
+
+const CHECK = '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M3.5 8.5l3 3 6-7" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>';
+
+// The numbered rail the five panels hang on: each step's marker (its number,
+// a check once done) on one line, so the order and the progress read at a glance.
+export function rail(statuses: StepStatus[], panels: string[]): string {
+  return `<ol class="rail">${panels.map((panel, i) => `<li class="step is-${esc(statuses[i])}"><span class="step-marker" aria-hidden="true">${statuses[i] === 'done' ? CHECK : esc(i + 1)}</span>${panel}</li>`).join('')}</ol>`;
+}
 
 export function jsonBlock(value: unknown): string {
   return `<pre class="json">${esc(JSON.stringify(value, null, 2))}</pre>`;
@@ -8,13 +56,19 @@ export function jsonBlock(value: unknown): string {
 
 export function tracePanel(entries: TraceEntry[]): string {
   const rows = [...entries].reverse().map(e => `
-    <details class="trace ${e.error ? 'is-error' : ''}" ${e === entries.at(-1) ? 'open' : ''}>
-      <summary><code>${esc(e.method)} ${esc(e.path)}</code> → <b>${esc(e.status ?? 'network error')}</b>${e.replayed ? ' <span class="tag">Idempotent-Replay</span>' : ''}${e.idempotencyKey ? ` <small>Idempotency-Key ${esc(e.idempotencyKey)}</small>` : ''} <small>${esc(e.at)}</small></summary>
-      ${e.requestBody !== null ? `<h4>Request body</h4>${jsonBlock(e.requestBody)}` : ''}
-      <h4>Response</h4>${jsonBlock(e.responseBody)}
+    <details class="trace${e.error ? ' is-error' : ''}"${e === entries.at(-1) ? ' open' : ''}>
+      <summary><span class="trace-call"><code><span class="method">${esc(e.method)}</span> ${esc(e.path)}</code> → <b class="${esc(statusClass(e.status))}">${esc(e.status ?? 'network error')}</b>${e.replayed ? ' <span class="tag">Idempotent-Replay</span>' : ''}</span><span class="trace-meta">${e.idempotencyKey ? `<small>Idempotency-Key ${esc(e.idempotencyKey)}</small> ` : ''}<small>${esc(e.at)}</small></span></summary>
+      ${e.requestBody !== null ? `<h3>Request body</h3>${jsonBlock(e.requestBody)}` : ''}
+      <h3>Response</h3>${jsonBlock(e.responseBody)}
       ${e.error ? `<p class="error">${esc(e.error)}</p>` : ''}
     </details>`).join('');
-  return `<section id="trace" class="panel"><h2>What we sent to Abillio</h2><p class="muted">Newest first. Headers are not shown. Secrets read <code>[redacted]</code> everywhere, and in Abillio's answers so do the keys named for personal data: e-mail addresses, first, last and legal names, contact persons, phone numbers, addresses, bank accounts, personal codes, registration and VAT numbers. Display names and free text (notes, descriptions, invite messages) stay readable, and what you type on the join page shows as typed in the request. Everything else is exactly the wire.</p>${rows || '<p class="muted">Nothing yet — press a button.</p>'}</section>`;
+  return `<section id="trace" class="console-section" aria-labelledby="trace-title"><h2 id="trace-title">What we sent to Abillio</h2><p class="muted">Newest first. Headers are not shown. Secrets read <code>[redacted]</code> everywhere, and in Abillio's answers so do the keys named for personal data: e-mail addresses, first, last and legal names, contact persons, phone numbers, addresses, bank accounts, personal codes, registration and VAT numbers. Display names and free text (notes, descriptions, invite messages) stay readable, and what you type on the join page shows as typed in the request. Everything else is exactly the wire.</p>${rows || '<p class="empty">Nothing yet — press a button.</p>'}</section>`;
+}
+
+// The answer's class, so the status reads as a colour too: 2xx went through,
+// anything else (or no answer at all) did not.
+function statusClass(status: number | null): string {
+  return status === null ? 'code is-bad' : status < 300 ? 'code is-ok' : status < 400 ? 'code is-neutral' : 'code is-bad';
 }
 
 export function errorBox(err: unknown): string {
@@ -24,7 +78,7 @@ export function errorBox(err: unknown): string {
       ? `<ul class="blockers">${err.blockers.map(b => `<li><code>${esc(b.code)}</code> ${esc(b.message)}${b.capability ? ` <small>(${esc(b.capability)})</small>` : ''}</li>`).join('')}</ul>`
       : '';
     const fields = Object.entries(err.fieldErrors ?? {}).map(([f, m]) => `<li><code>${esc(f)}</code> ${esc(Array.isArray(m) ? m.join('; ') : m)}</li>`).join('');
-    return `<div class="error-box"><b>${esc(err.status)} ${esc(err.code)}</b> — ${esc(err.message)}${err.hint ? `<p>${esc(err.hint)}</p>` : ''}${blockers}${fields ? `<ul>${fields}</ul>` : ''}${err.requestId ? `<small>request_id ${esc(err.requestId)}</small>` : ''}</div>`;
+    return `<div class="error-box" role="alert"><p class="error-title"><b>${esc(err.status)} ${esc(err.code)}</b> — ${esc(err.message)}</p>${err.hint ? `<p>${esc(err.hint)}</p>` : ''}${blockers}${fields ? `<ul class="fields-errors">${fields}</ul>` : ''}${err.requestId ? `<small>request_id ${esc(err.requestId)}</small>` : ''}</div>`;
   }
-  return `<div class="error-box">${esc((err as Error).message ?? String(err))}</div>`;
+  return `<div class="error-box" role="alert"><p class="error-title">${esc((err as Error).message ?? String(err))}</p></div>`;
 }

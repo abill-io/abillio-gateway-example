@@ -385,7 +385,7 @@ export function createApp(deps: Deps): Hono {
     try { await sendTestDelivery(deps.api, state.webhook.channel_id); return render(c); } catch (err) { return render(c, err); }
   });
 
-  app.get('/back', c => c.html(page('Back', '<main class="one-col"><section class="panel"><h1>Thanks — you can close this window.</h1><p class="muted">Abillio sends the freelancer here when the popup has no opener to post to.</p></section></main>')));
+  app.get('/back', c => c.html(page('Back', '<main id="main" class="one-col"><section class="panel"><h1>Thanks — you can close this window.</h1><p class="muted">Abillio sends the freelancer here when the popup has no opener to post to.</p></section></main>')));
 
   app.get('/api/state', c => c.json(publicState(deps.state.load())));
   app.get('/api/trace', c => c.json(deps.trace.list()));

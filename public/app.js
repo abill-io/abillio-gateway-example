@@ -8,7 +8,7 @@
   // buttons are usable again and stored events refresh the page again.
   const settle = () => {
     submitting = false;
-    for (const b of disabled) b.disabled = false;
+    for (const b of disabled) { b.disabled = false; b.classList.remove('is-working'); }
     disabled.clear();
   };
   window.addEventListener('pageshow', event => { if (event.persisted) settle(); });
@@ -43,11 +43,16 @@
       // A form that asks first (Start over) sends nothing on a "no", and its
       // button stays usable.
       if (form.dataset.confirm && !confirm(form.dataset.confirm)) { event.preventDefault(); return; }
+      // The pressed button reads "Working…" (style.css) while its page is on
+      // the way. Not on a form the page sends itself (the join page): nothing
+      // replaces that page, and its own status line says what happens.
+      const pressed = event.defaultPrevented ? null : event.submitter;
       // Disabled AFTER the browser has read the form data: a button disabled
       // inside the submit handler drops its own name/value (the simulate
       // outcome buttons rely on it).
       setTimeout(() => {
         for (const b of form.querySelectorAll('button')) if (!b.disabled) { b.disabled = true; disabled.add(b); }
+        if (pressed && disabled.has(pressed)) pressed.classList.add('is-working');
       }, 0);
       // A form the page sends itself (the join page's fetch) navigates nowhere.
       if (event.defaultPrevented) return;

@@ -1,145 +1,771 @@
-/* One plain stylesheet for both pages: no framework, no build step. */
+/* One stylesheet for both pages: no framework, no build step. Tokens first,
+   then the base, the interactive states, the layout, the components and the
+   feedback (errors, empty states). */
+
+/* ---- Tokens ------------------------------------------------------------- */
 :root {
-  --text: #1d1f23;
-  --muted: #6b7280;
-  --line: #d9dce1;
-  --surface: #ffffff;
-  --page: #f5f6f8;
-  --accent: #2456d6;
-  --accent-tint: #e8eefc;
-  --red: #b42318;
-  --red-line: #f1b9b3;
-  --red-tint: #fdeceb;
-  --green: #15803d;
-  --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  color-scheme: light;
+  /* Warm paper, warm ink, one warm gray family and one desaturated accent.
+     Red is kept for what failed; there is no second accent. Every text colour
+     here reads at 4.5:1 or more on every surface it is used on. */
+  --paper: #f6f3ee;
+  --surface: #fdfcfa;
+  --sunken: #f2eee7;
+  --console: #ece6dc;
+  --well: #f7f4ef;
+  --ink: #1c1a17;
+  --ink-2: #4a443c;
+  --muted: #645d52;
+  --line: #e6e0d6;
+  --line-strong: #d3cbbe;
+  --field-line: #958b7d;          /* form-field borders: 3:1 on a surface */
+  --accent: #0f766e;
+  --accent-hover: #0b625b;
+  --accent-ink: #0c625b;          /* the accent as text, on any surface */
+  --accent-tint: #ddeee9;
+  --on-accent: #ffffff;
+  --danger: #9f301b;
+  --danger-tint: #f8e8e2;
+  --danger-line: #e9c3b8;
+  --neutral-tint: #e9e3d9;
+
+  /* Shadows carry the paper's hue and one light source, from above. */
+  --shadow-card: 0 1px 2px rgb(74 56 30 / 0.06), 0 6px 16px -10px rgb(74 56 30 / 0.18);
+  --shadow-lift: 0 0 0 1px rgb(15 118 110 / 0.30), 0 12px 28px -16px rgb(15 118 110 / 0.45);
+  --ring: 0 0 0 3px rgb(15 118 110 / 0.22);
+
+  /* Type: Outfit for headings, Source Sans 3 for text, JetBrains Mono for
+     code, ids, amounts and the trace. Each falls back to the system's own. */
+  --font-display: "Outfit", ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+  --font-body: "Source Sans 3", ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  --text-xs: 0.75rem;
+  --text-sm: 0.875rem;
+  --text-md: 1rem;
+  --text-lg: 1.25rem;
+  --text-xl: clamp(1.9rem, 1.35rem + 1.9vw, 2.6rem);
+
+  /* Radii: tighter inside, softer on containers. */
+  --radius-xs: 4px;
+  --radius-sm: 8px;
+  --radius-md: 12px;
+  --radius-lg: 16px;
+
+  --page-max: 1280px;
+  --gutter: 24px;
+  --ease: 200ms cubic-bezier(0.2, 0, 0, 1);
 }
 
-* { box-sizing: border-box; }
+/* ---- Base --------------------------------------------------------------- */
+*, *::before, *::after { box-sizing: border-box; }
+
+html { -webkit-text-size-adjust: 100%; scroll-behavior: smooth; }
 
 body {
   margin: 0;
-  font: 15px/1.5 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
-  color: var(--text);
-  background: var(--page);
+  font: var(--text-md)/1.55 var(--font-body);
+  color: var(--ink);
+  background: var(--paper);
+  -webkit-font-smoothing: antialiased;
 }
 
-a { color: var(--accent); }
+h1, h2, h3 { font-family: var(--font-display); font-weight: 600; line-height: 1.2; color: var(--ink); text-wrap: balance; }
+p, li { text-wrap: pretty; }
 
-header.top {
+code, pre, kbd { font-family: var(--font-mono); font-size: 0.86em; font-variant-numeric: tabular-nums; }
+/* Ids and paths are long unbroken words: they break instead of widening a column. */
+code { overflow-wrap: anywhere; }
+
+a {
+  color: var(--accent-ink);
+  text-decoration-thickness: 1px;
+  text-underline-offset: 0.18em;
+  transition: color var(--ease), text-decoration-color var(--ease);
+}
+a:hover { color: var(--ink); text-decoration-thickness: 2px; }
+
+::selection { background: rgb(15 118 110 / 0.18); }
+
+.visually-hidden {
+  position: absolute !important;
+  width: 1px; height: 1px;
+  margin: -1px; padding: 0;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+  border: 0;
+}
+
+/* ---- Interactive states ------------------------------------------------- */
+/* One visible focus ring for everything a keyboard can reach. */
+:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+:focus:not(:focus-visible) { outline: none; }
+
+.skip-link {
+  position: absolute;
+  top: 12px; left: 12px;
+  z-index: 10;
+  padding: 8px 14px;
+  font-weight: 600;
+  color: var(--on-accent);
+  background: var(--accent);
+  border-radius: var(--radius-sm);
+  transform: translateY(-160%);
+  transition: transform var(--ease);
+}
+.skip-link:focus { transform: none; color: var(--on-accent); }
+
+/* Buttons are primary by default; a variant only swaps the variables, so the
+   hover and pressed rules hold for every kind. */
+button {
+  --btn-bg: var(--accent);
+  --btn-bg-hover: var(--accent-hover);
+  --btn-fg: var(--on-accent);
+  --btn-line: var(--accent);
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 40px;
+  padding: 8px 16px;
+  font: 600 0.9375rem/1.25 var(--font-body);
+  color: var(--btn-fg);
+  text-align: center;
+  background: var(--btn-bg);
+  border: 1px solid var(--btn-line);
+  border-radius: var(--radius-sm);
+  box-shadow: 0 1px 2px rgb(74 56 30 / 0.12);
+  cursor: pointer;
+  transition: background-color var(--ease), border-color var(--ease), color var(--ease), box-shadow var(--ease), transform var(--ease);
+}
+button:hover:not(:disabled) { background: var(--btn-bg-hover); }
+button:active:not(:disabled) { transform: translateY(1px); box-shadow: none; }
+
+/* Quiet: Start over, and any step but the current one (a press there repeats
+   or checks again; the current step's button is the one thing to do next). */
+button.secondary,
+.step:not(.is-current) button,
+.outcomes button {
+  --btn-bg: var(--surface);
+  --btn-bg-hover: var(--sunken);
+  --btn-fg: var(--ink);
+  --btn-line: var(--line-strong);
+}
+
+/* Disabled by the server (the step is not ready yet)... */
+button:disabled {
+  color: var(--muted);
+  background: var(--sunken);
+  border-color: var(--line);
+  box-shadow: none;
+  cursor: not-allowed;
+}
+/* ...or by app.js after a press: the pressed one says so until the answer
+   replaces the page. The label stays underneath for its width and for
+   screen readers. */
+button.is-working:disabled {
+  min-width: 8.5em;
+  color: transparent;
+  background: var(--btn-bg);
+  border-color: var(--btn-line);
+  cursor: progress;
+}
+button.is-working:disabled::after {
+  content: "Working\2026";
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  color: var(--btn-fg);
+  animation: working 1.2s ease-in-out infinite;
+}
+@keyframes working { 50% { opacity: 0.55; } }
+
+input, select, textarea {
+  transition: border-color var(--ease), box-shadow var(--ease), background-color var(--ease);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  html { scroll-behavior: auto; }
+  *, *::before, *::after { animation: none !important; transition: none !important; }
+}
+
+/* ---- Layout ------------------------------------------------------------- */
+/* The top bar: the brand, where the walk stands, the two pages. Its content
+   lines up with the page column under it. */
+.topbar {
   display: flex;
   flex-wrap: wrap;
-  gap: 0.25rem 1.5rem;
-  padding: 0.75rem 1.5rem;
+  align-items: center;
+  gap: 12px 32px;
+  padding: 12px max(var(--gutter), calc((100% - var(--page-max)) / 2));
   background: var(--surface);
   border-bottom: 1px solid var(--line);
 }
-header.top a { text-decoration: none; }
-header.top a:first-child { margin-right: auto; font-weight: 600; color: var(--text); }
+.brand {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  font: 600 1.0625rem/1.2 var(--font-display);
+  letter-spacing: -0.01em;
+  color: var(--ink);
+  text-decoration: none;
+}
+.brand:hover { color: var(--ink); }
+.brand-mark svg { display: block; width: 28px; height: 28px; }
+.brand-role { font-weight: 500; color: var(--muted); }
 
-main { max-width: 1400px; margin: 0 auto; padding: 1.5rem; }
+.walk { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 16px; margin-right: auto; }
+.walk form { margin: 0; }
+.walk button { min-height: 32px; padding: 4px 12px; font-size: var(--text-sm); }
+.progress {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  margin: 0;
+  font-size: var(--text-sm);
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  color: var(--ink-2);
+  white-space: nowrap;
+}
+.progress-track { display: inline-flex; gap: 3px; }
+.progress-track > span { width: 16px; height: 6px; background: var(--line-strong); border-radius: 2px; }
+.progress-track > .is-done { background: var(--accent); }
+.progress-track > .is-current { background: var(--accent-tint); box-shadow: inset 0 0 0 1.5px var(--accent); }
 
-.two-col {
+.topnav { display: flex; flex-wrap: wrap; gap: 4px; }
+.topnav a {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 6px 10px;
+  font-size: 0.9375rem;
+  font-weight: 600;
+  color: var(--ink-2);
+  text-decoration: none;
+  border-radius: var(--radius-sm);
+  transition: background-color var(--ease), color var(--ease);
+}
+.topnav a:hover { color: var(--ink); background: var(--sunken); }
+.topnav a[aria-current="page"] { color: var(--accent-ink); background: var(--accent-tint); }
+.icon { flex: none; width: 14px; height: 14px; }
+
+main {
+  width: min(var(--page-max), 100% - 2 * var(--gutter));
+  margin: 0 auto;
+  padding: 28px 0 64px;
+}
+
+/* Back office and join page: the work on the left, the wire on the right. */
+.two-col,
+.join {
   display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 1.5rem;
+  grid-template-columns: minmax(0, 7fr) minmax(0, 5fr);
+  gap: var(--gutter);
   align-items: start;
 }
 /* A grid item is as wide as its content by default; without this a long
    JSON line would widen its column instead of scrolling inside its block. */
-.two-col > * { min-width: 0; }
+.two-col > *,
+.join > * { min-width: 0; }
 
-@media (max-width: 900px) {
-  .two-col { grid-template-columns: 1fr; }
-  main { padding: 1rem; }
+/* The popup's last page: one short card. */
+main.one-col { width: min(720px, 100% - 2 * var(--gutter)); }
+
+/* The rail the five steps hang on: a marker per step and a line between.
+   minmax(0, 1fr): a step is never wider than the column, however long a JSON
+   line inside it (that scrolls in its own block). */
+.rail { display: grid; grid-template-columns: minmax(0, 1fr); gap: 20px; margin: 0; padding: 0; list-style: none; }
+.step {
+  position: relative;
+  display: grid;
+  grid-template-columns: 32px minmax(0, 1fr);
+  column-gap: 16px;
 }
+.step:not(:last-child)::before {
+  content: "";
+  position: absolute;
+  top: 54px;
+  bottom: -34px;
+  left: 15px;
+  width: 2px;
+  background: var(--line-strong);
+  border-radius: 1px;
+}
+.step.is-done:not(:last-child)::before { background: rgb(15 118 110 / 0.45); }
+.step-marker {
+  position: relative;
+  z-index: 1;
+  display: grid;
+  place-items: center;
+  width: 32px;
+  height: 32px;
+  margin-top: 18px;
+  font: 600 0.9375rem/1 var(--font-display);
+  font-variant-numeric: tabular-nums;
+  color: var(--muted);
+  background: var(--paper);
+  border: 1.5px solid var(--line-strong);
+  border-radius: 10px;
+}
+.step-marker svg { width: 16px; height: 16px; }
+.is-done > .step-marker { color: var(--on-accent); background: var(--accent); border-color: var(--accent); }
+.is-current > .step-marker { color: var(--accent-ink); background: var(--surface); border-color: var(--accent); box-shadow: var(--ring); }
 
 .panel {
-  margin-bottom: 1.5rem;
-  padding: 1rem 1.25rem;
+  padding: 20px 24px 24px;
   background: var(--surface);
-  border: 1px solid var(--line);
-  border-radius: 8px;
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-card);
 }
-.panel h2 { margin: 0 0 0.5rem; font-size: 1.1rem; }
+.is-current > .panel { box-shadow: var(--shadow-lift); }
+/* A step that is not ready yet recedes to an outline on the paper. */
+.is-upcoming > .panel { background: transparent; box-shadow: inset 0 0 0 1px var(--line-strong); }
 
-h4 { margin: 0.75rem 0 0.25rem; font-size: 0.85rem; }
+/* The console: the trace and the stored state, a shade darker than the page.
+   On the back office it stays in view while the steps scroll, and scrolls on
+   its own when it is taller than the window. */
+.console {
+  padding: 20px 22px 24px;
+  background: var(--console);
+  border-radius: var(--radius-lg);
+  box-shadow: inset 0 0 0 1px rgb(74 56 30 / 0.07);
+}
+.two-col > .console {
+  position: sticky;
+  top: 20px;
+  max-height: calc(100vh - 40px);
+  max-height: calc(100dvh - 40px);
+  overflow: auto;
+  overscroll-behavior: contain;
+  scrollbar-width: thin;
+  scrollbar-color: #c4baab transparent;
+}
+
+/* Under 1200px the progress line takes its own row in the top bar. */
+@media (max-width: 1199.98px) {
+  .brand { margin-right: auto; }
+  .walk { order: 3; width: 100%; margin-right: 0; padding-top: 10px; border-top: 1px solid var(--line); }
+}
+
+/* Under 1024px: one column, the console after the steps. */
+@media (max-width: 1023.98px) {
+  .two-col,
+  .join { grid-template-columns: minmax(0, 1fr); }
+  .two-col > .console { position: static; max-height: none; overflow: visible; }
+}
+
+/* Phones: the marker moves into its card's corner and the line goes, so the
+   card (and the key table) keeps the full width. */
+@media (max-width: 639.98px) {
+  :root { --gutter: 16px; }
+  main { padding-top: 20px; }
+  .topbar { gap: 8px 16px; padding-block: 10px; }
+  .topnav a { padding: 4px 8px; font-size: var(--text-sm); }
+  .rail { gap: 16px; }
+  .step { display: block; }
+  .step:not(:last-child)::before { display: none; }
+  .step-marker { position: absolute; top: 16px; left: 16px; width: 28px; height: 28px; margin: 0; }
+  .panel { padding: 16px; }
+  .step .step-head { min-height: 28px; padding-left: 40px; }
+  .console { padding: 16px; }
+}
+
+/* ---- Components --------------------------------------------------------- */
+/* A step's card: the head carries the title and the status in words. */
+.panel > :last-child { margin-bottom: 0; }
+.panel p { max-width: 65ch; margin: 12px 0; }
+.step-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px 12px;
+  margin-bottom: 4px;
+}
+.step-head h2 { margin: 0; font-size: var(--text-lg); letter-spacing: -0.015em; }
+.step-status {
+  padding: 2px 8px;
+  font-size: var(--text-xs);
+  font-weight: 700;
+  line-height: 1.5;
+  border-radius: var(--radius-xs);
+}
+.is-done .step-status { color: var(--accent-ink); background: var(--accent-tint); }
+.is-current .step-status { color: var(--on-accent); background: var(--accent); }
+/* "Not yet" is for screen readers: the gray marker already says it. */
+.is-upcoming .step-status {
+  position: absolute;
+  width: 1px; height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
 
 .muted { color: var(--muted); }
+.panel p.muted { font-size: 0.9375rem; }
 
-code, pre { font-family: var(--mono); font-size: 0.875em; }
+/* API paths inside prose get a faint chip, so they stand apart from the
+   sentence around them. (A record line is all values: no chips there.) */
+:where(.panel p:not(.facts), .console p, .lede) code {
+  padding: 1px 3px;
+  background: rgb(74 56 30 / 0.06);
+  border-radius: var(--radius-xs);
+  box-decoration-break: clone;
+  -webkit-box-decoration-break: clone;
+}
+
+/* What the walk has stored, as one record line. */
+.panel .facts {
+  max-width: none;
+  padding: 10px 14px;
+  color: var(--ink-2);
+  background: var(--sunken);
+  border-radius: var(--radius-sm);
+}
+.facts b { font-weight: 600; color: var(--ink); }
+
+/* Tags are labels (sandbox, webhook or poll, Idempotent-Replay); state tags
+   are values Abillio answered. Both square-ish, never pills. */
+.tag,
+code.state,
+.trace .code {
+  display: inline-block;
+  padding: 1px 6px;
+  font: 500 0.75rem/1.5 var(--font-mono);
+  white-space: nowrap;
+  vertical-align: 1px;
+  border-radius: var(--radius-xs);
+}
+.tag { color: var(--accent-ink); background: var(--accent-tint); }
+.tag.is-bad { color: var(--danger); background: var(--danger-tint); }
+code.state,
+.trace .code { color: var(--ink-2); background: var(--neutral-tint); overflow-wrap: normal; }
+code.state.is-ok,
+.trace .code.is-ok { color: var(--accent-ink); background: var(--accent-tint); }
+code.state.is-bad,
+.trace .code.is-bad { color: var(--danger); background: var(--danger-tint); }
+
+/* Disclosure: one chevron for every <details> on the pages. */
+summary { cursor: pointer; list-style: none; }
+summary::-webkit-details-marker { display: none; }
+summary::before {
+  content: "";
+  flex: none;
+  width: 7px;
+  height: 7px;
+  border-right: 1.5px solid currentColor;
+  border-bottom: 1.5px solid currentColor;
+  transform: rotate(-45deg);
+  transition: transform var(--ease);
+}
+details[open] > summary::before { transform: rotate(45deg); }
+
+/* Step 1: what the key may do. The state column keeps its width; the long
+   action ids break instead, so the table reads at 320px. */
+table.actions { width: 100%; margin-top: 16px; font-size: var(--text-sm); border-collapse: collapse; }
+.actions th {
+  padding: 6px 10px;
+  font-size: var(--text-xs);
+  font-weight: 700;
+  color: var(--muted);
+  text-align: left;
+  letter-spacing: 0.02em;
+  border-bottom: 1px solid var(--line-strong);
+}
+.actions td { padding: 7px 10px; vertical-align: top; border-bottom: 1px solid var(--line); }
+.actions th:first-child,
+.actions td:first-child { padding-left: 0; }
+.actions th:last-child,
+.actions td:last-child { width: 1%; padding-right: 0; text-align: right; white-space: nowrap; }
+.actions td code:not(.state) { font-size: 0.8125rem; }
+.actions small { margin-left: 4px; font-size: var(--text-xs); color: var(--muted); }
+.actions tbody tr { transition: background-color var(--ease); }
+.actions tbody tr:hover { background: rgb(74 56 30 / 0.035); }
+details.others { margin-top: 12px; }
+details.others > summary {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  padding: 4px 0;
+  font-size: var(--text-sm);
+  font-weight: 600;
+  color: var(--accent-ink);
+}
+details.others > summary:hover { color: var(--ink); }
+
+/* Forms: the label above its field. */
+form { margin: 0; }
+.panel > form { margin-top: 16px; }
+label { display: grid; gap: 6px; font-size: var(--text-sm); font-weight: 600; color: var(--ink-2); }
+input,
+select {
+  width: 100%;
+  min-height: 40px;
+  padding: 8px 12px;
+  font: 400 var(--text-md)/1.3 var(--font-body);
+  color: var(--ink);
+  background-color: #fffefc;
+  border: 1px solid var(--field-line);
+  border-radius: var(--radius-sm);
+}
+input:hover:not(:disabled),
+select:hover:not(:disabled) { border-color: var(--ink-2); }
+input:focus-visible,
+select:focus-visible { border-color: var(--accent); outline-offset: 1px; box-shadow: var(--ring); }
+/* Amounts are numbers to compare, so they get the figures of the code font. */
+input[inputmode="decimal"] { font-family: var(--font-mono); font-size: 0.9375rem; }
+select {
+  appearance: none;
+  padding-right: 36px;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 12 12'%3E%3Cpath d='M2.5 4.5 6 8l3.5-3.5' fill='none' stroke='%234a443c' stroke-width='1.6' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 12px center;
+  background-size: 12px;
+}
+fieldset { min-width: 0; margin: 0; padding: 0; border: 0; }
+input:disabled,
+select:disabled { color: var(--muted); background-color: var(--sunken); border-color: var(--line-strong); cursor: not-allowed; }
+
+.issue-form { display: grid; justify-items: start; gap: 16px; }
+.issue-form > p { margin: 0; }
+.fields {
+  display: grid;
+  grid-template-columns: minmax(0, 2.2fr) minmax(0, 1fr) minmax(0, 0.8fr);
+  gap: 12px;
+  width: 100%;
+}
+.fund { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 10px 12px; }
+.fund label { width: 9.5rem; }
+.fund .unit { line-height: 40px; color: var(--ink-2); }
+.panel > form.pay { margin-top: 12px; }
+.outcomes,
+.button-row { display: flex; flex-wrap: wrap; gap: 8px; }
+.button-row { margin: 16px 0; }
+.outcomes button { min-height: 34px; padding: 6px 12px; font-size: var(--text-sm); }
+
+/* The console: what went over the wire and what we keep. */
+.console h2 { margin: 0 0 8px; font-size: 1.0625rem; letter-spacing: -0.01em; }
+.console p.muted { max-width: 65ch; margin: 0 0 14px; font-size: var(--text-sm); }
+.console-section + .console-section {
+  margin-top: 28px;
+  padding-top: 24px;
+  border-top: 1px solid rgb(74 56 30 / 0.12);
+}
+
+details.trace { border-top: 1px solid rgb(74 56 30 / 0.12); }
+details.trace[open] { padding-bottom: 16px; }
+details.trace > summary {
+  display: grid;
+  grid-template-columns: 7px minmax(0, 1fr);
+  gap: 2px 12px;
+  margin: 0 -8px;
+  padding: 10px 8px;
+  border-radius: var(--radius-sm);
+  transition: background-color var(--ease);
+}
+details.trace > summary:hover { background: rgb(74 56 30 / 0.05); }
+details.trace > summary::before { grid-row: 1 / span 2; margin-top: 6px; }
+.trace-call { font-size: var(--text-sm); }
+.trace-call code { font-size: 0.8125rem; color: var(--ink); }
+.trace-call .method { font-weight: 600; }
+.trace-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0 12px;
+  font: 0.75rem/1.5 var(--font-mono);
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+  overflow-wrap: anywhere;
+}
+.trace-meta small { font-size: inherit; }
+details.trace h3 {
+  margin: 12px 0 6px;
+  font: 700 var(--text-xs)/1.4 var(--font-body);
+  color: var(--muted);
+  letter-spacing: 0.02em;
+}
+p.error { margin: 10px 0 0; font-size: var(--text-sm); color: var(--danger); }
 
 .json {
   max-height: 24rem;
-  margin: 0.5rem 0 0;
-  padding: 0.75rem;
+  margin: 0;
+  padding: 12px 14px;
   overflow: auto;
-  background: var(--page);
-  border: 1px solid var(--line);
-  border-radius: 6px;
+  font-size: 0.78rem;
+  line-height: 1.6;
+  color: var(--ink);
+  background: var(--well);
+  border: 1px solid rgb(74 56 30 / 0.1);
+  border-radius: var(--radius-md);
+  tab-size: 2;
+  scrollbar-width: thin;
+}
+.panel .json { background: var(--sunken); }
+
+/* Step 5: the events read as a log, newest first, one line each. */
+.events { container-type: inline-size; margin: 16px 0 0; padding: 0; list-style: none; border-top: 1px solid var(--line); }
+.events > li { border-bottom: 1px solid var(--line); }
+/* One log line: chevron, time, event, how it came. Where the list is narrow,
+   the time and the tag share the first row and the event name gets the whole
+   second one, so it does not break mid-word. */
+.events summary {
+  display: grid;
+  grid-template-columns: 7px auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 4px 10px;
+  margin: 0 -8px;
+  padding: 9px 8px;
+  border-radius: var(--radius-sm);
+  transition: background-color var(--ease);
+}
+.events summary:hover { background: rgb(74 56 30 / 0.04); }
+.events .when { font: 0.75rem/1.5 var(--font-mono); color: var(--muted); font-variant-numeric: tabular-nums; }
+.events summary code { font-size: 0.8125rem; font-weight: 500; }
+.events details[open] { padding-bottom: 12px; }
+.events .json { max-height: 12rem; }
+@container (max-width: 34rem) {
+  .events summary { grid-template-columns: 7px minmax(0, 1fr) auto; }
+  .events summary::before { grid-row: 1 / span 2; align-self: start; margin-top: 7px; }
+  .events .when { grid-area: 1 / 2; }
+  .events summary .tag { grid-area: 1 / 3; }
+  .events summary code { grid-area: 2 / 2 / auto / -1; }
 }
 
-button {
-  padding: 0.4rem 1rem;
-  font: inherit;
-  color: #fff;
-  background: var(--accent);
-  border: 1px solid var(--accent);
-  border-radius: 6px;
-  cursor: pointer;
+/* The join page. */
+.join-card { padding: 32px; }
+.join-card h1 { margin: 4px 0 12px; font-size: var(--text-xl); line-height: 1.08; letter-spacing: -0.025em; }
+.lede { max-width: 60ch; margin: 0; font-size: 1.0625rem; color: var(--ink-2); }
+.join-form { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 16px; margin-top: 28px; }
+.join-form .wide { grid-column: 1 / -1; }
+.join-form button { min-height: 48px; margin-top: 4px; font-size: var(--text-md); }
+#status ul { display: grid; gap: 6px; margin: 12px 0; padding: 0; list-style: none; }
+#status li {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 10px;
+  padding: 6px 10px;
+  font-size: var(--text-sm);
+  background: var(--well);
+  border-radius: var(--radius-sm);
 }
-/* app.js disables a form's buttons on submit, so a second click shows as ignored. */
-button:disabled { opacity: 0.5; cursor: progress; }
-/* Start over is not a step: quieter than a step's button, on its own line at the right. */
-button.secondary { color: var(--accent); background: var(--surface); }
-form.right { display: flex; justify-content: flex-end; margin: 0 0 0.75rem; }
+#status li::before { content: ""; width: 6px; height: 6px; background: var(--muted); border-radius: 2px; }
 
-.tag {
-  display: inline-block;
-  padding: 0 0.5rem;
-  font-size: 0.75rem;
-  font-weight: 600;
-  color: var(--accent);
-  background: var(--accent-tint);
-  border-radius: 999px;
-  vertical-align: middle;
+/* The popup's last page. */
+.one-col h1 { margin: 0 0 8px; font-size: 1.5rem; letter-spacing: -0.015em; }
+
+@media (max-width: 639.98px) {
+  .join-card { padding: 20px 16px; }
+  .fields,
+  .join-form { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
+  .fields .wide { grid-column: 1 / -1; }
+  .issue-form button,
+  .join-form button { width: 100%; }
 }
 
-table { width: 100%; margin-top: 0.75rem; border-collapse: collapse; }
-th, td { padding: 0.3rem 0.5rem; text-align: left; border-bottom: 1px solid var(--line); }
-/* Action ids are long unbroken words; on a phone they break instead of widening the page. */
-td { overflow-wrap: anywhere; }
-tr.needed { font-weight: 600; }
-tr.needed small { font-weight: 400; color: var(--muted); }
-.state-forbidden td:last-child,
-.state-unavailable td:last-child { color: var(--red); }
-.state-available td:last-child { color: var(--green); }
-details.others { margin-top: 0.5rem; }
-details.others summary { cursor: pointer; color: var(--muted); }
-
+/* ---- Feedback: errors, empty states, notes ------------------------------ */
+/* Abillio's refusal (or ours) above the steps, in its own words. */
 .error-box {
-  margin-bottom: 1.5rem;
-  padding: 0.75rem 1rem;
-  color: var(--red);
-  background: var(--red-tint);
-  border: 1px solid var(--red-line);
-  border-radius: 8px;
+  display: grid;
+  grid-template-columns: 20px minmax(0, 1fr);
+  column-gap: 12px;
+  margin: 0 0 20px;
+  padding: 16px 18px 16px 16px;
+  color: var(--ink);
+  background: var(--danger-tint);
+  border-radius: var(--radius-md);
+  box-shadow: inset 0 0 0 1px var(--danger-line);
 }
-.error-box p,
-.error-box ul { margin: 0.5rem 0; color: var(--text); }
-.error-box small { display: block; color: var(--muted); }
+.error-box::before {
+  content: "";
+  grid-row: 1;
+  width: 20px;
+  height: 20px;
+  margin-top: 1px;
+  background: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 20 20'%3E%3Ccircle cx='10' cy='10' r='8.25' fill='none' stroke='%239f301b' stroke-width='1.5'/%3E%3Cpath d='M10 5.75v5' stroke='%239f301b' stroke-width='1.75' stroke-linecap='round'/%3E%3Ccircle cx='10' cy='13.9' r='1.1' fill='%239f301b'/%3E%3C/svg%3E") center / 20px no-repeat;
+}
+.error-box > * { grid-column: 2; margin: 0; }
+.error-box > p { max-width: 70ch; }
+.error-box > * + * { margin-top: 10px; }
+.error-title { font-weight: 600; }
+.error-title b { font: 600 0.875rem/1.4 var(--font-mono); color: var(--danger); }
+.error-box > small { display: block; font: 0.75rem/1.5 var(--font-mono); color: var(--muted); }
 /* The blockers are a to-do list: each one is something to fix before retrying. */
-.blockers { padding-left: 1.5rem; list-style: "☐  "; }
+.blockers { display: grid; gap: 6px; padding: 0; list-style: none; }
+.blockers li {
+  position: relative;
+  padding: 8px 12px 8px 36px;
+  background: var(--surface);
+  border-radius: var(--radius-sm);
+  box-shadow: inset 0 0 0 1px var(--danger-line);
+}
+.blockers li::before {
+  content: "";
+  position: absolute;
+  top: 12px;
+  left: 12px;
+  width: 14px;
+  height: 14px;
+  border: 1.5px solid var(--danger);
+  border-radius: var(--radius-xs);
+}
+.blockers code { font-weight: 600; color: var(--danger); }
+.blockers small { color: var(--muted); }
+.fields-errors { padding-left: 1.25em; }
+.fields-errors li::marker { color: var(--danger); }
+.fields-errors code { font-weight: 600; }
 
-details.trace { padding: 0.5rem 0; border-top: 1px solid var(--line); }
-details.trace summary { cursor: pointer; overflow-wrap: anywhere; }
-details.trace small { color: var(--muted); }
-details.trace.is-error summary b { color: var(--red); }
-p.error { margin: 0.5rem 0 0; color: var(--red); }
+/* Nothing to show yet: say so in a box the content will take over. */
+.empty {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 12px 0 0;
+  padding: 14px 16px;
+  font-size: var(--text-sm);
+  color: var(--muted);
+  list-style: none;
+  border: 1px dashed rgb(74 56 30 / 0.24);
+  border-radius: var(--radius-md);
+}
+.empty::before {
+  content: "";
+  flex: none;
+  width: 18px;
+  height: 18px;
+  background: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 20 20' fill='none' stroke='%23645d52' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M3 11.5h4l1.5 2h3l1.5-2h4'/%3E%3Cpath d='M4.5 5.5h11L17 11.5V15a1.5 1.5 0 0 1-1.5 1.5h-11A1.5 1.5 0 0 1 3 15v-3.5z'/%3E%3C/svg%3E") center / contain no-repeat;
+}
+/* The trace waits for a request: arrows out and back. */
+#trace .empty::before {
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 20 20' fill='none' stroke='%23645d52' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M3.5 7h12M12.5 4l3 3-3 3M16.5 13h-12M7.5 10l-3 3 3 3'/%3E%3C/svg%3E");
+}
+.events:has(> .empty) { border-top: 0; }
+.events > li.empty { border-bottom: 1px dashed rgb(74 56 30 / 0.24); }
 
-/* Step 5: Reconnect and the test delivery share a line, and the events read as
-   a compact log, newest first, each payload capped lower than the trace's. */
-form.inline { display: inline-block; margin: 0 0.5rem 0.5rem 0; }
-ul.events { margin: 0.75rem 0 0; padding: 0; list-style: none; }
-ul.events > li { padding: 0.5rem 0; border-top: 1px solid var(--line); overflow-wrap: anywhere; }
-ul.events small { color: var(--muted); }
-ul.events .json { max-height: 12rem; }
+/* What the join page's script says about the popup. */
+p.note:empty { display: none; }
+p.note {
+  max-width: none;
+  margin: 16px 0 0;
+  padding: 10px 14px;
+  font-size: var(--text-sm);
+  color: var(--ink-2);
+  background: var(--sunken);
+  border-radius: var(--radius-sm);
+  overflow-wrap: anywhere;
+}
+#status .ok {
+  margin: 12px 0 0;
+  padding: 12px 14px;
+  color: var(--ink);
+  background: var(--accent-tint);
+  border-radius: var(--radius-sm);
+  box-shadow: inset 3px 0 0 var(--accent);
+}
+
+@media (min-width: 640px) {
+  /* Above the rail the error lines up with the cards, not the markers. */
+  .steps-col > .error-box { margin-left: 48px; }
+}

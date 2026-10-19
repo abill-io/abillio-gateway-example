@@ -21,6 +21,27 @@ test('GET / renders the company page with the five step panels', async () => {
   for (const title of ['Step 1', 'Step 2', 'Step 3', 'Step 4', 'Step 5']) assert.ok(html.includes(title), title);
 });
 
+test('the progress line and the rail read where the walk stands off the stored state', async () => {
+  const joined = (): State => {
+    const s = sandboxState();
+    s.freelancer = { email: 'anna@example.com', session_id: 's1', session_url: 'https://new.abillio.dev/s/tok', engagement_id: 'e1', servicing_company_slug: 'abillio-ks' };
+    return s;
+  };
+  const invoice = (status: string) => ({ id: 'inv-1', number: 'DEMO-1', status, public_url: 'https://new.abillio.dev/invoice/x' });
+  const event = { received_at: '2026-10-19T10:00:00.000Z', event_type: 'engagement.onboarding.started', data: {}, via: 'webhook' as const, dedupe_key: 'k' };
+  const cases: { label: string; state: State; done: number; current: number | null }[] = [
+    { label: 'nothing stored', state: defaultState(), done: 0, current: 1 },
+    { label: 'a draft is not an issued invoice', state: Object.assign(joined(), { invoice: invoice('draft') }), done: 2, current: 3 },
+    { label: 'an event heard before the invoice leaves the current step where it is', state: Object.assign(joined(), { events: [event] }), done: 3, current: 3 },
+    { label: 'paid, and heard from Abillio: the walk is done', state: Object.assign(joined(), { invoice: invoice('paid'), events: [event] }), done: 5, current: null },
+  ];
+  for (const { label, state, done, current } of cases) {
+    const html = await (await appWith((async () => ({})) as Api, memoryState(state)).app.request('/')).text();
+    assert.ok(html.includes(`${done} of 5 steps done`), label);
+    assert.equal(html.match(/<li class="step is-current">[\s\S]*?id="step-(\d)"/)?.[1] ?? null, current === null ? null : String(current), label);
+  }
+});
+
 test('POST /steps/key stores the account and shows the actions table; an error renders as the envelope', async () => {
   const api = (async (_m: string, path: string) => {
     if (path === '/me/session/') return { account: { id: 'a1', name: 'Acme', slug: 'acme', is_sandbox: true, kind: 'company' }, is_owner: true, user_email: 'dev@acme.test' };
