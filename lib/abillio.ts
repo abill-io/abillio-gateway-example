@@ -97,14 +97,33 @@ export type Api = <T>(
 
 const PKCS8_ED25519_PREFIX = Buffer.from('302e020100300506032b657004220420', 'hex');
 
-// What the trace may keep of a body: keys named like secrets are replaced,
-// because the page serves the trace to whoever opens it (on the hosted copy,
-// everyone). Headers are never recorded at all.
-const REDACTED_KEYS = new Set(['secret', 'private_key', 'password', 'token', 'user_email']);
-export function redactForTrace(value: unknown): unknown {
-  if (Array.isArray(value)) return value.map(redactForTrace);
+// What the trace may keep of a body: keys named like secrets or like personal
+// data are replaced, because the page serves the trace to whoever opens it (on
+// the hosted copy, everyone). Headers are never recorded at all.
+//
+// One list per direction, and the two differ on purpose. A request body is the
+// sample's own: the e-mail and names a visitor types on the join page go out as
+// typed, and showing them as typed is the demo. An answer is Abillio's data, not
+// the visitor's: GET /accounts/clients/ returns the self-client row, which
+// carries the account owner's real e-mail and address, so a response masks every
+// key that can hold a person's data, the three the join page types included. A
+// request masks only the keys the page never types. `description` (the invoice
+// line the visitor types) is on neither list.
+const REQUEST_REDACTED_KEYS = new Set([
+  'secret', 'private_key', 'password', 'token', 'user_email',
+  'iban', 'account_number', 'personal_code', 'registration_number', 'vat_number', 'legal_name',
+  'phone', 'phone_number', 'address', 'address_line1', 'address_line2', 'city', 'postal_code',
+  // The contact and address spellings of the client row on GET /accounts/clients/.
+  'accounting_email', 'contact_person', 'address_formatted', 'address_street', 'address_apartment', 'address_city', 'address_state', 'address_postal_code',
+]);
+const RESPONSE_REDACTED_KEYS = new Set([...REQUEST_REDACTED_KEYS, 'email', 'first_name', 'last_name']);
+
+export type TraceDirection = 'request' | 'response';
+export function redactForTrace(value: unknown, direction: TraceDirection): unknown {
+  if (Array.isArray(value)) return value.map(item => redactForTrace(item, direction));
   if (value && typeof value === 'object') {
-    return Object.fromEntries(Object.entries(value as Record<string, unknown>).map(([k, v]) => [k, REDACTED_KEYS.has(k) ? '[redacted]' : redactForTrace(v)]));
+    const keys = direction === 'request' ? REQUEST_REDACTED_KEYS : RESPONSE_REDACTED_KEYS;
+    return Object.fromEntries(Object.entries(value as Record<string, unknown>).map(([k, v]) => [k, keys.has(k) ? '[redacted]' : redactForTrace(v, direction)]));
   }
   return value;
 }
@@ -161,7 +180,7 @@ export function createApi(
       at: new Date(now()).toISOString(),
       method,
       path: url.pathname + url.search,
-      requestBody: redactForTrace(body ?? null),
+      requestBody: redactForTrace(body ?? null, 'request'),
       status: null as number | null,
       responseBody: null as unknown,
       idempotencyKey: opts.idempotencyKey ?? null,
@@ -185,7 +204,7 @@ export function createApi(
       parsed = text;
     }
     entry.status = response.status;
-    entry.responseBody = redactForTrace(parsed);
+    entry.responseBody = redactForTrace(parsed, 'response');
     entry.replayed = response.headers.get('idempotent-replay') !== null;
     if (!response.ok) {
       const error = new AbillioError(response.status, typeof parsed === 'object' ? (parsed as Record<string, unknown>) : null, text);

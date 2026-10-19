@@ -114,10 +114,76 @@ test('the trace redacts keys named like secrets in both bodies; the wire and the
   assert.equal(out.user_email, 'a@b.c', 'the caller gets the real answer');
 });
 
-test('redactForTrace replaces the other listed keys at any depth, inside arrays too, and copies instead of mutating', () => {
-  const body = { password: 'p', items: [{ token: 't', n: 1 }], nested: { private_key: 'k', keep: 'v' } };
-  assert.deepEqual(redactForTrace(body), { password: '[redacted]', items: [{ token: '[redacted]', n: 1 }], nested: { private_key: '[redacted]', keep: 'v' } });
+test("the trace keeps the join form as typed and masks the account owner's personal data in the client rows Abillio answers with", async () => {
+  const trace = new Trace();
+  const ownerRow = {
+    id: 'c1', name: 'Acme SIA', kind: 'company', company_account_id: 'a1',
+    email: 'owner@acme.test', accounting_email: 'books@acme.test', phone: '+37120000000', contact_person: 'Inara Ozola',
+    address_formatted: 'Brivibas iela 1, Riga, LV-1010', address_street: 'Brivibas iela 1', address_city: 'Riga', address_postal_code: 'LV-1010',
+    registration_number: '40003000001', vat_number: 'LV40003000001',
+  };
+  const api = createApi(env, {
+    fetchImpl: fakeFetch(url => new Response(JSON.stringify(url.includes('/accounts/clients/') ? { count: 1, items: [ownerRow] } : { session_id: 's1' }), { status: 200 })),
+    trace,
+  });
+  const join = { email: 'anna@example.com', locale: 'lv', return_url: 'http://localhost:4000/back', prefill: { first_name: 'Anna', last_name: 'Ozola', tax_country: 'LV' } };
+  await api('POST', '/onboarding/sessions/', join, { idempotencyKey: 'idem-6' });
+  await api('GET', '/accounts/clients/?limit=100');
+  const [onboarding, clients] = trace.list();
+  assert.deepEqual(onboarding.requestBody, join);
+  assert.deepEqual(clients.responseBody, {
+    count: 1,
+    items: [{
+      id: 'c1', name: 'Acme SIA', kind: 'company', company_account_id: 'a1',
+      email: '[redacted]', accounting_email: '[redacted]', phone: '[redacted]', contact_person: '[redacted]',
+      address_formatted: '[redacted]', address_street: '[redacted]', address_city: '[redacted]', address_postal_code: '[redacted]',
+      registration_number: '[redacted]', vat_number: '[redacted]',
+    }],
+  });
+});
+
+test('redactForTrace replaces secret-like keys in both directions, at any depth, inside arrays too, and copies instead of mutating', () => {
+  const body = { password: 'p', secret: 's', items: [{ token: 't', n: 1 }], nested: { private_key: 'k', keep: 'v' } };
+  for (const direction of ['request', 'response'] as const) {
+    assert.deepEqual(redactForTrace(body, direction), { password: '[redacted]', secret: '[redacted]', items: [{ token: '[redacted]', n: 1 }], nested: { private_key: '[redacted]', keep: 'v' } }, direction);
+  }
   assert.equal(body.items[0].token, 't');
+});
+
+test('redactForTrace masks personal data in a response wherever it sits: the rows of a list, nested objects', () => {
+  const page = {
+    count: 2,
+    items: [
+      { id: 'c1', name: 'Acme SIA', email: 'owner@acme.test', legal_name: 'Acme SIA', address_line1: 'Brivibas iela 1', company_account_id: 'a1' },
+      { id: 'c2', name: 'Ben', email: 'ben@example.com', counterparty: { first_name: 'Ben', last_name: 'Ozols', iban: 'LV80BANK0000435195001' } },
+    ],
+  };
+  assert.deepEqual(redactForTrace(page, 'response'), {
+    count: 2,
+    items: [
+      { id: 'c1', name: 'Acme SIA', email: '[redacted]', legal_name: '[redacted]', address_line1: '[redacted]', company_account_id: 'a1' },
+      { id: 'c2', name: 'Ben', email: '[redacted]', counterparty: { first_name: '[redacted]', last_name: '[redacted]', iban: '[redacted]' } },
+    ],
+  });
+});
+
+test('redactForTrace keeps a request as the visitor typed it, and never masks a description', () => {
+  const join = { email: 'anna@example.com', locale: 'lv', return_url: 'http://localhost:4000/back', prefill: { first_name: 'Anna', last_name: 'Ozola', tax_country: 'LV' } };
+  assert.deepEqual(redactForTrace(join, 'request'), join);
+  const draft = { client_uuid: 'c1', items: [{ description: 'Tutoring, October', quantity: '1', unit_price: '100.00', unit_code: 'HUR' }], currency_code: 'EUR' };
+  for (const direction of ['request', 'response'] as const) assert.deepEqual(redactForTrace(draft, direction), draft, direction);
+});
+
+test('redactForTrace masks each key the page never types, in a request as in a response', () => {
+  const never = [
+    'iban', 'account_number', 'personal_code', 'phone', 'phone_number', 'registration_number', 'vat_number', 'legal_name',
+    'address', 'address_line1', 'address_line2', 'city', 'postal_code',
+    // The spellings of the client row on GET /accounts/clients/.
+    'accounting_email', 'contact_person', 'address_formatted', 'address_street', 'address_apartment', 'address_city', 'address_state', 'address_postal_code',
+  ];
+  const real = Object.fromEntries(never.map(key => [key, `real ${key}`]));
+  const hidden = Object.fromEntries(never.map(key => [key, '[redacted]']));
+  for (const direction of ['request', 'response'] as const) assert.deepEqual(redactForTrace(real, direction), hidden, direction);
 });
 
 function answering(status: number, body: unknown) {

@@ -14,7 +14,7 @@ export function tracePanel(entries: TraceEntry[]): string {
       <h4>Response</h4>${jsonBlock(e.responseBody)}
       ${e.error ? `<p class="error">${esc(e.error)}</p>` : ''}
     </details>`).join('');
-  return `<section id="trace" class="panel"><h2>What we sent to Abillio</h2><p class="muted">Newest first. Headers are not shown, and secrets and e-mail addresses in a body read <code>[redacted]</code>; everything else is exactly the wire.</p>${rows || '<p class="muted">Nothing yet — press a button.</p>'}</section>`;
+  return `<section id="trace" class="panel"><h2>What we sent to Abillio</h2><p class="muted">Newest first. Headers are not shown. Secrets read <code>[redacted]</code> everywhere, and so does personal data in Abillio's answers (e-mail addresses, names, phone numbers, addresses, bank accounts, personal codes, registration and VAT numbers); what you type on the join page shows as typed in the request. Everything else is exactly the wire.</p>${rows || '<p class="muted">Nothing yet — press a button.</p>'}</section>`;
 }
 
 export function errorBox(err: unknown): string {

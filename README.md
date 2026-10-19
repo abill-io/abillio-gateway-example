@@ -66,14 +66,20 @@ the stylesheet.
 
 The right-hand column of the back office, **What we sent to Abillio**, is the
 trace of the last fifty calls, newest first: method, path, request body, status
-and response body exactly as they went over the wire. Headers are never
-recorded, and any body key named `secret`, `private_key`, `password`, `token` or
-`user_email` reads `[redacted]`. The **What we store** panel shows
-`data/state.json`, with the webhook signing secret cut down to its last four
-characters; `GET /api/state` and `GET /api/trace` serve the same two things as
-JSON. On the hosted copy everyone shares one walk: the state, the trace and the
-made-up `@example.com` addresses in them are the same for every visitor, and
-**Start over** starts the walk over for everybody.
+and response body as they went over the wire, minus what the page must not show
+to whoever opens it. Headers are never recorded, and any body key named
+`secret`, `private_key`, `password`, `token` or `user_email` reads `[redacted]`.
+Personal data reads `[redacted]` too: in an answer from Abillio, every key that
+holds a person's e-mail address, name, phone number, address, bank account,
+personal code or registration or VAT number (`GET /accounts/clients/` returns
+a row for the account owner's own company, with the owner's e-mail on it); in a
+request, only the keys no form of the sample types, so the e-mail and names
+typed on the join page and the invoice description show as typed. The
+**What we store** panel shows `data/state.json`, with the webhook signing secret
+cut down to its last four characters; `GET /api/state` and `GET /api/trace`
+serve the same two things as JSON. On the hosted copy everyone shares one walk:
+the state, the trace and the made-up `@example.com` addresses in them are the
+same for every visitor, and **Start over** starts the walk over for everybody.
 
 ### Idempotency, the one rule every step follows
 
