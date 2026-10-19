@@ -735,3 +735,41 @@ test('one poll tick at a time: a tick that finds the last one still waiting on A
   t.mock.timers.tick(5000);
   assert.equal(reads, 2, 'once it is back, the next tick polls again');
 });
+
+// --- Start over ---------------------------------------------------------------
+
+test('POST /reset resets the sandbox and the state but keeps the webhook channel, with its pending request and keys', async () => {
+  const initial = defaultState();
+  initial.account = { id: 'a1', name: 'Acme', slug: 'acme' };
+  initial.invoice = { id: 'inv-1', number: 'A-1', status: 'paid', public_url: 'u' };
+  // A connect that stopped mid-way: the channel exists on Abillio, the
+  // subscription's outcome is unknown, so its request and key wait for a replay.
+  initial.webhook = { channel_id: 'ch1', subscription_id: null, secret: 'a'.repeat(64), url: 'https://x/webhooks/abillio' };
+  initial.webhook_request = { url: 'https://x/webhooks/abillio', secret: 'a'.repeat(64) };
+  initial.idempotency = { 'pay:inv-1': 'k-pay', 'webhook:channel': 'k-channel', 'webhook:subscription': 'k-subscription' };
+  let answer: () => Promise<unknown> = async () => { throw new AbillioError(403, { error: { code: 'forbidden', message: 'Not allowed.' } }, ''); };
+  const keys: (string | undefined)[] = [];
+  const api = (async (method: string, path: string, _body?: unknown, opts?: { idempotencyKey?: string }) => {
+    if (method === 'POST' && path === '/accounts/sandbox/reset') { keys.push(opts?.idempotencyKey); return answer(); }
+    throw new Error(path);
+  }) as Api;
+  const { app, state } = appWith(api, fileLikeState(initial));
+
+  const refused = await app.request('/reset', { method: 'POST' });
+  assert.equal(refused.status, 200);
+  assert.ok((await refused.text()).includes('Not allowed.'), 'the refusal is shown');
+  assert.deepEqual(state.load(), initial, 'and the walk is kept: the sandbox still holds it');
+
+  answer = async () => ({ ok: true });
+  const res = await app.request('/reset', { method: 'POST' });
+  assert.equal(res.status, 302);
+  assert.equal(res.headers.get('location'), '/');
+  assert.equal(keys.length, 2);
+  assert.ok(keys[0] && keys[1] && keys[0] !== keys[1], 'each press is a new reset, under a new key');
+  const after = state.load();
+  assert.equal(after.invoice, null);
+  assert.equal(after.account, null);
+  assert.deepEqual(after.webhook, initial.webhook, 'the channel still exists on Abillio');
+  assert.deepEqual(after.webhook_request, initial.webhook_request);
+  assert.deepEqual(after.idempotency, { 'webhook:channel': 'k-channel', 'webhook:subscription': 'k-subscription' }, "the webhook's keys stay with its request, so the next Connect replays instead of subscribing twice");
+});

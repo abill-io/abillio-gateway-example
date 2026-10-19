@@ -9,14 +9,14 @@ import { csrf } from 'hono/csrf';
 import { streamSSE } from 'hono/streaming';
 import { AbillioError, createApi, type Api } from './lib/abillio.ts';
 import { loadEnv } from './lib/env.ts';
-import { forgetIdempotencyKey, loadState, updateState, type KeyedOptions, type State, type Store } from './lib/store.ts';
+import { defaultState, forgetIdempotencyKey, loadState, updateState, type KeyedOptions, type State, type Store } from './lib/store.ts';
 import { Trace, trace as processTrace } from './lib/trace.ts';
 import { dedupeKey, parseDelivery, verifySignature } from './lib/webhooks.ts';
 import { checkKey, type KeyReport } from './steps/01-key.ts';
 import { findEngagement, onboardingAction, onboardingBody, readSession, returnUrlFor, startOnboarding, type JoinForm } from './steps/02-onboard.ts';
 import { draftInvoice, findSelfClient, invoiceRequest, issueInvoice, pendingRequest } from './steps/03-issue.ts';
 import { DEFAULT_COMPANY, PAYOUT_OUTCOMES, findPayout, fundWallet, payAction, payInvoice, readInvoice, readPayout, simulateAction, simulatePayout } from './steps/04-pay.ts';
-import { connectWebhooks, pollForEvents, recordPoll, sendTestDelivery } from './steps/05-events.ts';
+import { WEBHOOK_ACTIONS, connectWebhooks, pollForEvents, recordPoll, sendTestDelivery } from './steps/05-events.ts';
 import { companyPage } from './views/company.ts';
 import { joinPage } from './views/join.ts';
 import { page } from './views/layout.ts';
@@ -359,7 +359,31 @@ export function createApp(deps: Deps): Hono {
     }),
   );
 
-  // Task 10 adds its routes above this line.
+  // Start over: Abillio puts the sandbox's demo data back as it was seeded,
+  // and the sample forgets this walk. A new key each press: a reset is meant
+  // to run again. A refused reset forgets nothing, since the sandbox still
+  // holds the walk.
+  app.post('/reset', async c => {
+    try {
+      await deps.api('POST', '/accounts/sandbox/reset', undefined, { idempotencyKey: randomUUID() });
+    } catch (err) {
+      return render(c, err);
+    }
+    // The webhook channel and subscription are the account's, not demo data,
+    // so they outlive the reset and are kept, with a request still pending
+    // from a connect that stopped mid-way and the keys it went out under:
+    // re-sent under a new key, that request would create a second channel or
+    // subscription. Everything else starts over.
+    deps.state.update(s => {
+      const idempotency: Record<string, string> = {};
+      for (const action of Object.values(WEBHOOK_ACTIONS)) if (s.idempotency[action]) idempotency[action] = s.idempotency[action];
+      const keep = { webhook: s.webhook, webhook_request: s.webhook_request, idempotency };
+      Object.assign(s, defaultState(), keep);
+    });
+    lastKey = null;
+    return c.redirect('/', 302);
+  });
+
   return app;
 }
 

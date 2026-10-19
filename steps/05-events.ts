@@ -25,6 +25,11 @@ export const SUBSCRIBED_EVENTS = [
   'bulk_invoice.completed',
 ];
 
+// The stored actions the two keyed POSTs of a connect live under. Start over
+// (server.ts) keeps their keys with the webhook, so a request still pending
+// replays under its own key.
+export const WEBHOOK_ACTIONS = { channel: 'webhook:channel', subscription: 'webhook:subscription' } as const;
+
 // Connecting is up to three calls, and each answer is stored as it comes, so
 // a press after a partial failure carries on where the last one stopped:
 // - the channel. What its POST sends (the destination and a secret generated
@@ -47,8 +52,8 @@ export async function connectWebhooks(api: Api, keyed: Keyed, store: Store, publ
     const request = store.update(s => { s.webhook_request ??= fresh; }).webhook_request ?? fresh;
     const channel = await keyed(
       state,
-      'webhook:channel',
-      () => api<{ id: string }>('POST', '/accounts/notifications/channels/', { name: 'gateway-example', kind: 'webhook', destination: request.url, secret: request.secret, is_enabled: true }, { idempotencyKey: idempotencyKeyFor(state, 'webhook:channel') }),
+      WEBHOOK_ACTIONS.channel,
+      () => api<{ id: string }>('POST', '/accounts/notifications/channels/', { name: 'gateway-example', kind: 'webhook', destination: request.url, secret: request.secret, is_enabled: true }, { idempotencyKey: idempotencyKeyFor(state, WEBHOOK_ACTIONS.channel) }),
       { onRefused: s => { s.webhook_request = null; } },
     );
     const created = { channel_id: channel.id, subscription_id: null, secret: request.secret, url: request.url };
@@ -61,7 +66,7 @@ export async function connectWebhooks(api: Api, keyed: Keyed, store: Store, publ
   }
   if (!webhook.subscription_id) {
     const { channel_id } = webhook;
-    const subscription = await keyed(state, 'webhook:subscription', () => api<{ id: string }>('POST', '/accounts/notifications/subscriptions/', { name: 'gateway-example', channel_uuids: [channel_id], event_types: SUBSCRIBED_EVENTS }, { idempotencyKey: idempotencyKeyFor(state, 'webhook:subscription') }));
+    const subscription = await keyed(state, WEBHOOK_ACTIONS.subscription, () => api<{ id: string }>('POST', '/accounts/notifications/subscriptions/', { name: 'gateway-example', channel_uuids: [channel_id], event_types: SUBSCRIBED_EVENTS }, { idempotencyKey: idempotencyKeyFor(state, WEBHOOK_ACTIONS.subscription) }));
     store.update(s => {
       if (s.webhook?.channel_id !== channel_id) return;
       s.webhook.subscription_id = subscription.id;

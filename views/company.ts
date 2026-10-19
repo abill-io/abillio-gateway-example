@@ -9,8 +9,13 @@ import { errorBox, jsonBlock, tracePanel } from './partials.ts';
 export type CompanyPageInput = { state: State; trace: TraceEntry[]; key: KeyReport | null; error: unknown; publicUrl: string | null };
 
 export function keyPanel(key: KeyReport | null, state: State): string {
+  const actionTable = (actions: KeyReport['actions']) => `<table><tr><th>Action</th><th>State</th></tr>${actions.map(a => `<tr class="${a.needed ? 'needed' : ''} state-${esc(a.state)}"><td><code>${esc(a.id)}</code>${a.needed ? ' <small>needed</small>' : ''}</td><td>${esc(a.state)}</td></tr>`).join('')}</table>`;
+  // The actions the five steps need stay in view; the rest of the surface
+  // (well over a hundred rows) folds away, so it does not push the steps off
+  // the screen.
+  const others = key ? key.actions.filter(a => !a.needed) : [];
   const table = key
-    ? `<table><tr><th>Action</th><th>State</th></tr>${key.actions.map(a => `<tr class="${a.needed ? 'needed' : ''} state-${esc(a.state)}"><td><code>${esc(a.id)}</code>${a.needed ? ' <small>needed</small>' : ''}</td><td>${esc(a.state)}</td></tr>`).join('')}</table>`
+    ? actionTable(key.actions.filter(a => a.needed)) + (others.length ? `<details class="others"><summary>The other ${esc(others.length)} actions on this surface</summary>${actionTable(others)}</details>` : '')
     : '';
   // No "signed in as <the key owner's e-mail>": on the hosted copy every
   // visitor sees this page, and that address is not theirs to see.
@@ -105,8 +110,11 @@ export function eventsPanel(state: State, publicUrl: string | null): string {
 }
 
 export function companyPage(input: CompanyPageInput): string {
+  // `data-confirm` is asked by app.js, which then leaves the button usable on
+  // a "no" (an inline onsubmit would not stop app.js from disabling it).
   const body = `<main class="two-col">
     <div>
+      <form method="post" action="/reset" class="right" data-confirm="Reset the sandbox demo data and forget this walk?"><button class="secondary">Start over</button></form>
       ${errorBox(input.error)}
       ${keyPanel(input.key, input.state)}
       ${onboardingPanel(input.state)}

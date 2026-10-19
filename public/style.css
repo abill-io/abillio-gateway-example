@@ -89,6 +89,9 @@ button {
 }
 /* app.js disables a form's buttons on submit, so a second click shows as ignored. */
 button:disabled { opacity: 0.5; cursor: progress; }
+/* Start over is not a step: quieter than a step's button, on its own line at the right. */
+button.secondary { color: var(--accent); background: var(--surface); }
+form.right { display: flex; justify-content: flex-end; margin: 0 0 0.75rem; }
 
 .tag {
   display: inline-block;
@@ -110,6 +113,8 @@ tr.needed small { font-weight: 400; color: var(--muted); }
 .state-forbidden td:last-child,
 .state-unavailable td:last-child { color: var(--red); }
 .state-available td:last-child { color: var(--green); }
+details.others { margin-top: 0.5rem; }
+details.others summary { cursor: pointer; color: var(--muted); }
 
 .error-box {
   margin-bottom: 1.5rem;

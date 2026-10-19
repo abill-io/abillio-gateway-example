@@ -4,15 +4,758 @@ A company's side of an Abillio integration, small enough to read in one sitting:
 a freelancer joins through the Abillio popup, the company issues an invoice in
 their name, pays it from its wallet, the payout goes out, and webhooks tell the
 company what happened. Every call to Abillio is shown on the page as it is made.
+A hosted copy runs at https://demo.abillio.dev.
+
+![The back office after a full walk: the five steps on the left, every call to Abillio on the right](docs/back-office.png)
+
+It is one Node process with two pages: the company's back office at `/` and the
+freelancer's sign-up page at `/join`. It talks to Abillio's company API, signs
+every request itself and keeps what a real integration would keep in its own
+database in one readable file, `data/state.json`. The
+[partner integration guide](https://backend.abillio.dev/company-api/) is the
+reference; this repository is the worked example of its happy path, and each
+chapter below links back to it.
 
 ## Run it
 
-1. Node 22.12 or newer.
-2. `cp .env.example .env` and fill in a **sandbox** key: ask Abillio for the demo
-   key, or register a business account on https://new.abillio.dev, open its
-   sandbox twin and create an API key there.
-3. `npm install && npm start`, then open http://localhost:4000.
+You need Node 22.12 or newer and a key for a **sandbox** company account. Ask
+Abillio for the demo key, or for an invitation to the staging dashboard at
+https://new.abillio.dev: register a business account there, open its sandbox
+twin and create an API key. A sandbox account runs the real plans and the real
+tax rules, moves no money, and is not held back by its own verification, so the
+whole path works on day one.
 
-## Chapters
+```bash
+cp .env.example .env    # then fill in the key, see below
+npm install
+npm start               # http://localhost:4000
+```
 
-(written in Task 10)
+The settings live in `.env`, which the npm scripts load with `node --env-file`:
+
+| Variable | What it is |
+|---|---|
+| `ABILLIO_API_URL` | The company API. Defaults to the staging host, `https://backend.abillio.dev/company-api/v1`; production is the same path on the host Abillio gives you with the key. |
+| `ABILLIO_API_KEY_ID` | The key id shown on the API key page. |
+| `ABILLIO_PRIVATE_KEY` | The 64 hex characters Abillio shows once when the key is created: the raw Ed25519 seed, not a PEM file. It never reaches a page, a log or the trace. |
+| `ABILLIO_ACCOUNT` | Only if the key reaches more than one account: the account UUID or slug to act as. |
+| `PUBLIC_URL` | A public https URL of this server, for webhooks (step 5). Leave it empty and the server polls instead. |
+| `PORT` | 4000 unless you say otherwise. |
+| `STATE_FILE` | Where the state lives; `data/state.json` unless you say otherwise. |
+
+The other commands: `npm test` runs the unit tests (no network; the signing and
+the webhook verification are checked against vectors produced by Abillio's own
+signer), `npm run typecheck` runs `tsc`, `npm run smoke` runs the story without a
+browser (see [The smoke test](#the-smoke-test)) and `npm run tunnel` prints how
+to give this machine a public URL.
+
+## How it is put together
+
+TypeScript runs directly (`node --experimental-strip-types`), so there is no
+build step, and the only runtime dependency is [Hono](https://hono.dev) with its
+Node adapter. `server.ts` holds the routes. Each step lives in its own file
+under `steps/`, which makes the calls and nothing else (no HTML), so each
+chapter below has one file to read next to it, and the smoke script calls the
+same functions in the same order.
+`lib/abillio.ts` is the only module that talks to Abillio: it signs, sends and
+records. `lib/store.ts` reads and writes `data/state.json`, always whole,
+through a temporary file and a rename, so a crash mid-write leaves the previous
+version intact. `lib/webhooks.ts` verifies and deduplicates deliveries. `views/`
+renders the two pages, and `public/` holds the popup script, the page script and
+the stylesheet.
+
+The right-hand column of the back office, **What we sent to Abillio**, is the
+trace of the last fifty calls, newest first: method, path, request body, status
+and response body exactly as they went over the wire. Headers are never
+recorded, and any body key named `secret`, `private_key`, `password`, `token` or
+`user_email` reads `[redacted]`. The **What we store** panel shows
+`data/state.json`, with the webhook signing secret cut down to its last four
+characters; `GET /api/state` and `GET /api/trace` serve the same two things as
+JSON. On the hosted copy everyone shares one walk: the state, the trace and the
+made-up `@example.com` addresses in them are the same for every visitor, and
+**Start over** starts the walk over for everybody.
+
+### Idempotency, the one rule every step follows
+
+Abillio stores the answer to every `POST` and `PATCH` that carries an
+`Idempotency-Key` and replays it, with `Idempotent-Replay: true`, when the same
+key comes back with the same body ([guide: retrying safely](https://backend.abillio.dev/company-api/#idempotency)).
+The sample's client refuses to send a `POST` or `PATCH` without a key, and every
+key is stored in `data/state.json` under the action it belongs to:
+`onboard:<e-mail>:<digest of the body>`, `draft:<engagement>`,
+`issue:<invoice>`, `pay:<invoice>`, `webhook:channel` and
+`webhook:subscription`. A key is claimed in the store **before** the call, so
+two overlapping presses, a restart or a crash mid-call send the same key instead
+of minting a second one.
+
+What happens to a key afterwards depends on the answer. After a success it is
+kept, and pressing the button again replays the first answer: the trace marks it
+**Idempotent-Replay**, and no second invoice or payment exists. After a refusal
+Abillio composed itself (a 4xx in its `error` envelope) the key is forgotten,
+because Abillio keeps a spent key and would answer a retry with 409, so the next
+press is a new attempt. After an unknown outcome (a bare `{"detail": …}` 409
+from Abillio's idempotency layer, a 5xx or a network failure) the key is kept,
+and the next press replays whatever the first attempt did. For the same reason
+the request body is stored with its key (`invoice_request`, `webhook_request`):
+a retry sends exactly the same bytes, even on another day, since a different
+body under the same key is refused for good.
+
+A few actions deliberately take a fresh key on every press, because each press
+is meant to run again: the sandbox deposit, the test delivery, Start over, and
+the channel move in step 5 (a `PATCH` that sets a destination comes out the
+same however often it is sent). The payout simulation is an event rather than a
+state, so its key is spent on any settled answer, a success included: `paid`
+after `returned` plays again instead of replaying the first `paid`.
+
+Two cases are worth knowing before you copy the pattern. The issue call is not
+atomic: after a 5xx Abillio keeps the claim, and a retry gets a bare 409 that
+says the request requires reconciliation until an operator settles it, so read
+the invoice back with `GET /accounts/invoices/{id}/` rather than pressing again.
+And `pay:<invoice>` replays the first payment's success for as long as the key
+is stored, so if an invoice ever owes money again (after a chargeback), a second
+real payment needs a new key.
+
+The sample never retries anything on its own. The stored key is what makes a
+person's retry safe; an automatic retry would hide the cause of the failure from
+the person who has to fix it.
+
+The responses in the chapters below were captured on Abillio's staging sandbox
+while the sample was walked twice: once without a public URL (the examples in
+step 2) and once through a tunnel (steps 3 to 5). Ids are shortened, and long
+answers are abridged to the fields the sample reads.
+
+## Step 1 — Does the key work?
+
+The goal is to prove that the key signs correctly and may do what the next four
+steps do, before anything else is tried (`steps/01-key.ts`). **Check the key** sends two read-only
+calls: `GET /me/session/` says which account the key acts as, and
+`GET /me/authorization/` is the key's own preview of what it may do, one entry
+per action. Every request carries four headers, `X-API-Key`, `X-API-Timestamp`
+(unix seconds), `X-API-Signature` (lowercase hex Ed25519 over
+`{timestamp}{account}{method}{path}{body}`, with the full path including the
+query string) and `X-Account` when you set one; `lib/abillio.ts` builds them
+([guide: authentication](https://backend.abillio.dev/company-api/#auth)).
+
+This is `GET /me/session/`, without the e-mail of the key's user, which the
+sample keeps off the page:
+
+```json
+{
+  "account": {
+    "id": "01a100d8-b580-…",
+    "name": "Artūrs Test Business Demo",
+    "slug": "arturs-test-business-demo",
+    "kind": "company",
+    "is_sandbox": true
+  },
+  "is_owner": false
+}
+```
+
+and three of the entries `GET /me/authorization/` returned:
+
+```json
+{
+  "account_kind": "company",
+  "surface": "company_api",
+  "actions": {
+    "freelancers.invite": { "state": "available", "required": [], "reason_code": null, "money_limits": [] },
+    "wallet.payment.execute": {
+      "state": "context_required",
+      "required": ["command", "locked_quote", "money_context", "normalized_invoice_set", "resource"],
+      "reason_code": null,
+      "money_limits": [{ "basis": "account_debit", "currency": "EUR", "maximum": "5000.00", "unlimited": false, "source": "restriction" }]
+    },
+    "credentials.create": { "state": "forbidden", "required": [], "reason_code": "credential_mode_forbidden", "money_limits": [] }
+  }
+}
+```
+
+The page lists the twelve actions the steps use (`NEEDED_ACTIONS` in
+`steps/01-key.ts`) first and folds the rest away. `context_required` is a yes:
+the call itself carries what the action needs, such as the invoice to pay.
+The step writes `account: { id, name, slug }` to `data/state.json`; step 3 needs
+the account id to find the self-client.
+
+**What can go wrong.** A 401 means Abillio refused the signature, and the page
+says the usual causes: this machine's clock is more than 300 seconds off,
+`ABILLIO_PRIVATE_KEY` is not the seed that was shown when the key was minted,
+or the key is bound to another account than `ABILLIO_ACCOUNT`. A key past its
+validity date reads the same way. A `forbidden` row explains a 403 in a later
+step before it happens; ask for the action on the key, or use a key that has it.
+If the server will not even start, `.env` is the problem: the seed must be the 64
+hex characters, and the key id must be set.
+
+## Step 2 — The freelancer joins
+
+The goal is to bring a freelancer onto Abillio without sending them away from
+the partner's site, and to learn the engagement that later steps act on
+(`steps/02-onboard.ts`, `views/join.ts`, `public/popup.js`;
+[guide: gateway onboarding](https://backend.abillio.dev/company-api/#gateway)).
+The freelancer fills in the partner's own form on `/join`; the partner's server
+mints an onboarding session, and the browser only opens the link Abillio
+returns.
+
+`POST /onboarding/sessions/`, keyed on the address and a digest of the exact
+body:
+
+```json
+{
+  "email": "anna+de-mvfq16f2@example.com",
+  "locale": "en",
+  "return_url": "http://localhost:4000/back",
+  "prefill": { "first_name": "Anna", "last_name": "Ozola", "tax_country": "DE" }
+}
+```
+
+answered with `201`:
+
+```json
+{
+  "session_id": "01a155e7-3f25-…",
+  "url": "https://new.abillio.dev/s/<token>",
+  "expires_at": "2026-10-20T20:43:00.773461Z",
+  "status": "awaiting_freelancer",
+  "purpose": "onboarding",
+  "mode": "onboarding"
+}
+```
+
+`public/popup.js` opens the popup synchronously on the click, as
+`window.open('about:blank', 'abillio', 'popup,width=520,height=760')`, so the
+browser allows it, and points it at `url` once the server has answered. In the
+popup the freelancer gives consent, verifies their identity and adds a payout
+method. The last page offers **Back to** and the company's name; pressed, the
+popup posts one message to the window that opened it and closes itself:
+
+```json
+{ "source": "abillio", "session_id": "01a155e7-3f25-…", "purpose": "onboarding", "state": "complete", "can_be_paid": true }
+```
+
+The message goes to the origin of `return_url`, so the page that opened the
+popup must be on that origin. With a **sandbox** key `return_url` may be
+`http://localhost:<port>/back` or `http://127.0.0.1:<port>/back`, so this step
+needs no tunnel; production accounts need https. When `PUBLIC_URL` is set,
+`return_url` becomes `PUBLIC_URL/back`, so open the pages at that address too,
+or the message is dropped (the page's own status poll still shows the outcome). `popup.js`
+trusts the message only when `event.origin` is Abillio's (taken from the session
+url) and `data.source` is `"abillio"`.
+
+Meanwhile the page asks the server every three seconds, and the server asks
+`GET /onboarding/sessions/{session_id}`. This is the last answer of the walk:
+
+```json
+{
+  "state": "complete",
+  "can_be_paid": true,
+  "requirements": [
+    { "key": "profile", "state": "done" },
+    { "key": "country", "state": "done" },
+    { "key": "kyc", "state": "done" },
+    { "key": "payout_method", "state": "done" },
+    { "key": "engagement", "state": "done" }
+  ],
+  "purpose": "onboarding",
+  "mode": "onboarding"
+}
+```
+
+The session carries no engagement id, so once it has left `awaiting_freelancer`
+the server looks the engagement up by the address the link was minted for,
+`GET /engagements/?search=<e-mail>`, and keeps the row whose
+`counterparty.email` matches. Abridged, at the moment of the first lookup:
+
+```json
+{
+  "items": [{
+    "id": "01a155e7-3efa-…",
+    "status": "invited",
+    "counterparty": {
+      "email": "anna+de-mvfq16f2@example.com",
+      "tax_country": "DE",
+      "servicing_company": { "slug": "abillio-ou", "name": "abillio OÜ", "country": "EE" }
+    },
+    "compliance": { "kyc_status": "not_started", "payout_ready": false, "can_be_paid": false }
+  }],
+  "count": 1
+}
+```
+
+The step writes `freelancer: { email, session_id, session_url, engagement_id,
+servicing_company_slug }`. The serving company decides which balance the
+company's payment draws on in step 4.
+
+![The freelancer's page after the popup closed](docs/join.png)
+
+In the sandbox the address is never looked up, written to or mailed: the
+session creates a sandbox freelancer who walks every step a newcomer does.
+Identity is approved the moment it is started (**Auto-approve (demo account)**),
+and a bank account proven by a statement verifies as it is saved. A freelancer
+served by the Latvian cooperative also pays the €1 membership fee, which the
+popup plays with a **Simulate payment** action.
+
+**What can go wrong.** A blocked popup: the page then says so and shows the
+link to open by hand. A malformed address is refused before Abillio is called,
+and an error from Abillio comes back to the page as its code and message. The
+link is single-use and valid for 24 hours; minting again for the same address
+gives a new link, and the same freelancer keeps their engagement. Changing
+anything in the form changes the body, so it is a new attempt under a new key;
+only an identical resubmit replays. A production account refuses an `http`
+return URL with a 400.
+
+## Step 3 — Issue an invoice in the freelancer's name
+
+The goal is one invoice in the freelancer's name, billed to the company itself
+and issued (`steps/03-issue.ts`; [guide: issuing](https://backend.abillio.dev/company-api/#issuing)).
+Two calls, so a draft can be looked at before it becomes a document; each has
+its own key.
+
+First the self-client, the client row that is the company itself: Abillio
+provisions one for every verified company account, and the list cannot be
+filtered to it, so `GET /accounts/clients/?limit=100` and keep the row whose
+`company_account_id` is your own account id. Abridged:
+
+```json
+{
+  "id": "01a100d8-b5d2-…",
+  "name": "Artūrs Test Business Demo",
+  "kind": "legal",
+  "is_owned": true,
+  "company_account_id": "01a100d8-b580-…"
+}
+```
+
+Then the draft, `POST /engagements/{engagement_id}/invoices/` under
+`draft:<engagement>`. The request is dated once and stored in `invoice_request`
+before the first call, so a retry sends exactly this:
+
+```json
+{
+  "client_uuid": "01a100d8-b5d2-…",
+  "items": [{ "description": "Tutoring, October", "quantity": "1", "unit_price": "100.00", "unit_code": "HUR" }],
+  "currency_code": "EUR",
+  "issued_date": "2026-10-19",
+  "due_date": "2026-11-02",
+  "language": "en"
+}
+```
+
+`unit_code` is a UN/ECE Rec 20 code, which e-invoicing requires on every line.
+The answer is a `201` draft, abridged:
+
+```json
+{
+  "id": "01a155ec-4c3d-…",
+  "status": "draft",
+  "issuer_ref": { "display_name": "Anna Ozola", "kind": "freelancer" },
+  "issued_by_ref": { "display_name": "Artūrs Test Business Demo", "kind": "company" },
+  "amounts": {
+    "total_before_tax": { "amount": "100.00", "currency": "EUR" },
+    "total": { "amount": "124.00", "currency": "EUR" },
+    "net_payout": { "amount": "95.00", "currency": "EUR" }
+  }
+}
+```
+
+Last, `POST /engagements/{engagement_id}/invoices/{invoice_id}/issue` under
+`issue:<invoice>`, with no body. Issuing to the self-client also approves the
+invoice, so it is waiting for payment straight away:
+
+```json
+{
+  "id": "01a155ec-4c3d-…",
+  "invoice_number": "DEMO-DFCD4-L4K-1",
+  "status": "pending",
+  "public_url": "https://new.abillio.dev/invoice/e4a1e2bf-…"
+}
+```
+
+The step writes `invoice: { id, number, status, public_url }`. An engagement is
+drafted for once: with a draft stored, a press only sends the issue call, and
+after issuing, the button replays that call, which shows up in the trace as
+**Idempotent-Replay**.
+
+**What can go wrong.** A 409 on the issue call lists every reason at once in
+`error.blockers`: the engagement or the mandate (`engagement_inactive`,
+`mandate_missing`), your company (`company_unverified`, `kyc_missing`), the
+freelancer (`kyc_missing`, `invoicing_blocked`) and the invoice
+(`payout_method_missing`, `documents_unsigned`, …). The page shows them as a
+checklist; nothing was written, so fix them and press again, and the stored
+draft is issued. Do not pre-check: the issue call decides when it runs. A 422
+names a field (an unknown `unit_code`, a malformed amount). After a 5xx on the
+issue call, read the invoice back instead of retrying (see
+[Idempotency](#idempotency-the-one-rule-every-step-follows)). "No self-client"
+means the company account is not verified yet.
+
+## Step 4 — Pay it from the wallet
+
+The goal is to pay what the invoice owes from the company's Abillio wallet, let
+Abillio create the freelancer's payout on its own, and, in the sandbox, decide
+what the bank does with it (`steps/04-pay.ts`; [guide: paying](https://backend.abillio.dev/company-api/#paying)).
+
+**Fund the wallet** is the sandbox's stand-in for a bank transfer,
+`POST /accounts/wallet/sandbox/simulate-deposit` under a fresh key each press:
+
+```json
+{ "amount": "250.00", "currency": "EUR", "company": "abillio-ou" }
+```
+
+It answers with one balance row per serving company and currency, abridged:
+
+```json
+[
+  { "company_slug": "abillio-ou", "available": { "amount": "376.00", "currency": "EUR" } },
+  { "company_slug": "abillio-ks", "available": { "amount": "66.90", "currency": "EUR" } }
+]
+```
+
+The deposit goes to the row of the company that serves the freelancer
+(`servicing_company_slug` from step 2), because the payment draws on the row of
+the company that issued the invoice, and another company's row does not help.
+
+**Pay** is `POST /accounts/wallet/pay-invoice/` under `pay:<invoice>`:
+
+```json
+{ "invoice_uuid": "01a155ec-4c3d-…" }
+```
+
+```json
+{ "operation_id": "01a155ec-5ecb-…", "created": true }
+```
+
+It debits what the invoice still owes, so a part-paid invoice is settled for the
+remainder and never twice. Pressing again replays this exact answer with
+`Idempotent-Replay: true`, which is what the back office screenshot above shows.
+Abillio then creates the automatic payout inside the same request, and the
+sample finds it with `GET /engagements/{engagement_id}/payouts/?invoice_uuid={invoice_id}`
+(abridged):
+
+```json
+{
+  "items": [{
+    "id": "01a155ec-5ff4-…",
+    "invoice_uuid": "01a155ec-4c3d-…",
+    "status": "pending",
+    "kind": "profit_share",
+    "net_amount": { "amount": "95.00", "currency": "EUR" },
+    "payout_method": { "kind": "sepa", "destination": "DE** **** **** 3000", "status": "verified" }
+  }],
+  "count": 1
+}
+```
+
+and reads the invoice back with `GET /accounts/invoices/{invoice_id}/`, which
+now says `"status": "paid"` and `"paid_via": "wallet"`. In the sandbox the four
+**Simulate** buttons send
+`POST /engagements/{engagement_id}/payouts/{payout_id}/sandbox/simulate` with
+`{ "outcome": "paid" }` (or `processing`, `rejected`, `returned`). The simulator
+runs the real lifecycle and emits the real events; it answered with the payout,
+now `"status": "paid"`, and the sample stores a fresh read of it.
+
+The step writes the invoice's new status and `payout: { id, status }`.
+
+**What can go wrong.** `409 insufficient_balance`: the balance row of the
+company that issued the invoice cannot cover it, even if another company's row
+could; nothing is written, so fund that row and press again. `409 not_payable`:
+something holds the invoice (a document to sign, a check in progress), and its
+`blockers` say what. A `sent` invoice waits for its acceptance, and any status
+that cannot be paid answers 400. If no payout appears after a payment, the
+freelancer could not be paid out automatically: the invoice carries no verified
+payout method, or Abillio refused the payout, in which case your company's
+Abillio inbox has a `wallet.auto_payout_blocked` notification. The page says
+that no payout was created. A simulated outcome that cannot follow where the
+payout stands is a `409 payout_transition_not_allowed`, and a key with a payout
+cap refuses a bigger payment with `409 api_key_payout_limit`.
+
+## Step 5 — Hear from Abillio
+
+The goal is to learn what happened without asking: webhooks when the server has
+a public URL, and polling when it has none (`steps/05-events.ts`,
+`lib/webhooks.ts`; [guide: webhooks](https://backend.abillio.dev/company-api/#webhooks)).
+
+**With a public URL.** Run `npm run tunnel` for the two one-liners
+(`cloudflared tunnel --url http://localhost:4000` or `ngrok http 4000`), put the
+https URL the tunnel prints in `.env` as `PUBLIC_URL`, restart, and open the
+pages at that URL. **Connect webhooks** then sends up to three calls, storing each answer
+as it comes, so a press after a partial failure carries on where the last one
+stopped. The channel, under `webhook:channel`, with a secret generated here (32
+random bytes as hex) and stored, because Abillio never returns it:
+
+```
+POST /accounts/notifications/channels/
+{ "name": "gateway-example", "kind": "webhook", "destination": "https://<your public URL>/webhooks/abillio",
+  "secret": "<64 hex characters>", "is_enabled": true }
+```
+
+When the channel already exists but points elsewhere (a quick tunnel gets a new
+URL on every start), **Reconnect** moves it with
+`PATCH /accounts/notifications/channels/{channel_id}` and
+`{ "destination": …, "secret": <the stored secret> }`. This is the answer from
+the walk, which moved the channel after Start over and so also shows that the
+channel outlives a sandbox reset:
+
+```json
+{
+  "id": "01a155ab-8451-…",
+  "name": "gateway-example",
+  "kind": "webhook",
+  "destination": "https://gathered-indoor-dolls-hottest.trycloudflare.com/webhooks/abillio",
+  "is_enabled": true,
+  "created_at": "2026-10-19T19:37:46.321139Z",
+  "updated_at": "2026-10-19T20:47:42.636044Z"
+}
+```
+
+Then the subscription, `POST /accounts/notifications/subscriptions/` under
+`webhook:subscription`, with `{ "name": "gateway-example", "channel_uuids":
+[<channel_id>], "event_types": […] }`. A subscription keeps exactly the events
+it lists, so the sample names every engagement event the guide documents plus
+`bulk_invoice.completed`. As Abillio holds it:
+
+```json
+{
+  "id": "01a155ab-856f-…",
+  "channel_ids": ["01a155ab-8451-…"],
+  "name": "gateway-example",
+  "event_types": [
+    "engagement.onboarding.started", "engagement.onboarding.completed", "engagement.kyc.updated",
+    "engagement.requirements_updated", "engagement.commission.accepted", "engagement.commission.credited",
+    "engagement.commission.reversed", "engagement.invoice.confirmed", "engagement.invoice.status_changed",
+    "engagement.invoice.paid", "engagement.payout.processing", "engagement.payout.completed",
+    "engagement.payout.failed", "bulk_invoice.completed"
+  ],
+  "is_enabled": true
+}
+```
+
+**Send a test delivery** is `POST /accounts/notifications/channels/{channel_id}/test`
+under a fresh key, answered `{ "success": true }` once your receiver has said
+2xx. The test delivery is signed like any other, but its body is not an
+envelope:
+
+```json
+{ "event_type": "channel.test", "message": "This is a test notification from Abillio.", "channel_name": "gateway-example" }
+```
+
+Every real delivery is one envelope, `{ event, timestamp, account_id,
+account_name, data }`. This is the `engagement.invoice.paid` that reached the
+sample during the walk (key order as sent; the sample stores `data` with the
+three outer fields folded in):
+
+```json
+{
+  "event": "engagement.invoice.paid",
+  "timestamp": "2026-10-19T20:48:36.745734Z",
+  "account_id": "01a100d8-b580-…",
+  "account_name": "Artūrs Test Business Demo",
+  "data": {
+    "freelancer_account_id": "01a155eb-b909-…",
+    "freelancer_name": "Anna Ozola",
+    "engagement_id": "01a155eb-b982-…",
+    "invoice_uuid": "01a155ec-4c3d-…",
+    "invoice_number": "DEMO-DFCD4-L4K-1",
+    "amount": "124.00",
+    "currency": "EUR",
+    "status": "paid",
+    "paid_at": "2026-10-19T20:48:36.642257Z"
+  }
+}
+```
+
+The receiver, `POST /webhooks/abillio`, does what the guide asks, in this order.
+It reads the **raw bytes** of the body before anything parses them, refuses an
+`X-Timestamp` more than 300 seconds from now with a 400, takes `v1` from
+`X-Signature: t=<ts>,v1=<hex>`, computes `HMAC-SHA256(secret, "<X-Timestamp>." +
+raw body)` and compares the two with `timingSafeEqual`, refusing a mismatch with
+a 401. Only then does it parse the body. A retry is signed afresh with a new
+timestamp but carries the same body, so deliveries are deduplicated on the event
+and a hash of the body, and stored once; the test delivery is never
+deduplicated, because every press is a new one. The receiver answers 200 at
+once and tells the open back office to refresh. A delivery that fails a check
+stores nothing and shows up in the trace with the reason. During the walk the
+sample received, in order: the test delivery, `engagement.onboarding.started`,
+two `engagement.requirements_updated`, `engagement.onboarding.completed`,
+`engagement.invoice.status_changed`, `engagement.invoice.confirmed`,
+`engagement.invoice.paid`, `engagement.payout.processing` and
+`engagement.payout.completed`.
+
+**Without a public URL.** There is no Connect button, and every five seconds the
+server makes the same reads the steps make (`GET /onboarding/sessions/{id}`,
+`GET /accounts/invoices/{id}/`, `GET /engagements/{id}/payouts/{payout_id}`),
+compares them with `data/state.json` and stores each change as an event named
+the way the webhook names it, marked `poll`; the walk without a tunnel stored
+`engagement.onboarding.completed` and `engagement.invoice.paid` that way. The
+poller only moves a status from the value it compared, and leaves a draft to the
+issue button, so it never undoes what a button just stored.
+
+The step writes `webhook: { channel_id, subscription_id, secret, url }`, the
+pending `webhook_request` while a connect is under way, and `events`.
+
+**What can go wrong.** Without `PUBLIC_URL` the receiver answers 503, and the
+panel says how to get a public URL. While the channel points at a dead URL (a
+stopped tunnel), the test delivery answers 422 with the reason and real
+deliveries fail; Abillio retries a failed delivery a few times and disables the
+channel after ten failures in a row (re-enable it in the dashboard, or with a
+`PATCH` that sets `is_enabled`), so press **Reconnect** as soon as the URL
+changes. A 401 from your own receiver means the body was changed before it was
+verified (a framework that parsed and re-serialised it) or the secret is not
+the one you sent; a 400 means the clock or a replayed old delivery.
+
+## Start over
+
+**Start over** (top of the back office, after a confirmation) calls
+`POST /accounts/sandbox/reset` under a fresh key, which Abillio answers with
+`{ "ok": true }` after putting the sandbox's own demo data back as it was
+seeded. The freelancers you onboarded, their engagements, invoices and payouts
+are not demo data and stay on Abillio. The sample then forgets the walk:
+`data/state.json` goes back to empty except the webhook channel and
+subscription, which belong to the account and outlive the reset, together with
+a connect request still pending and the keys it went out under (re-sent under a
+new key, that request would create a second channel or subscription). A refused
+reset forgets nothing, since the sandbox still holds the walk.
+
+## The smoke test
+
+`npm run smoke` is the story without a browser. It checks the key, refuses to
+go on against anything but a sandbox account, mints an onboarding link for a
+fresh `smoke+…@example.com` (an invited freelancer appears in the sandbox each
+time; sandbox addresses are never mailed) and prints the link:
+
+```
+key ok: Artūrs Test Business Demo (arturs-test-business-demo), sandbox=true
+onboarding link minted for smoke+mvfpqcge@example.com: https://new.abillio.dev/s/<token>
+set SMOKE_ENGAGEMENT_ID to a payable engagement to also issue, pay and settle
+```
+
+The popup is the freelancer's to walk, so the rest needs an engagement that can
+already be paid. Given one, the smoke issues a 10.00 EUR invoice, funds the
+wallet, pays, finds the automatic payout and settles it:
+
+```
+$ SMOKE_ENGAGEMENT_ID=01a13b91-f093-74a2-9561-7375ce2af831 npm run smoke
+key ok: Artūrs Test Business Demo (arturs-test-business-demo), sandbox=true
+onboarding link minted for smoke+mvfpqfl1@example.com: https://new.abillio.dev/s/<token>
+issued DEMO-HTW7J-YRM-3 (pending), 12.10 EUR
+wallet funded: 50.00 EUR on abillio-ks
+paid DEMO-HTW7J-YRM-3: operation 01a155df-af01-…
+payout 01a155df-b036-… created (pending)
+payout 01a155df-b036-… paid
+```
+
+The deposit goes to `abillio-ks`; set `SMOKE_COMPANY` to the slug of the
+company that serves the engagement's freelancer when that is another one. The
+smoke keeps its state in memory, so every run is a new invoice and a new
+payment and `data/state.json` is never touched, and it exits with 1 on the first
+error, so it can gate a release.
+
+## Signing requests in another language
+
+The signature is the same in any language: Ed25519 over
+`{timestamp}{account}{method}{path}{body}`, hex-encoded. This is
+`lib/abillio.ts` in Python, with `requests` and `cryptography`
+(`pip install requests cryptography`):
+
+```python
+import json
+import os
+import time
+from urllib.parse import urlsplit
+
+import requests
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+
+BASE_URL = os.environ.get('ABILLIO_API_URL') or 'https://backend.abillio.dev/company-api/v1'
+KEY_ID = os.environ['ABILLIO_API_KEY_ID']
+ACCOUNT = os.environ.get('ABILLIO_ACCOUNT', '')
+KEY = Ed25519PrivateKey.from_private_bytes(bytes.fromhex(os.environ['ABILLIO_PRIVATE_KEY']))
+
+
+def abillio(method, path, payload=None, idempotency_key=None):
+    if method in ('POST', 'PATCH') and not idempotency_key:
+        raise ValueError('store an Idempotency-Key per action and pass it in')
+    url = BASE_URL.rstrip('/') + path
+    parts = urlsplit(url)
+    full_path = parts.path + (f'?{parts.query}' if parts.query else '')
+    # The bytes you sign are the bytes you send: serialise once, send that.
+    body = json.dumps(payload, separators=(',', ':')) if payload is not None else ''
+    timestamp = str(int(time.time()))
+    message = f'{timestamp}{ACCOUNT}{method}{full_path}{body}'.encode()
+    headers = {
+        'X-API-Key': KEY_ID,
+        'X-API-Timestamp': timestamp,
+        'X-API-Signature': KEY.sign(message).hex(),
+        'Accept': 'application/json',
+        # Cloudflare in front of Abillio refuses Python's urllib default
+        # User-Agent (error 1010); name your integration in every client.
+        'User-Agent': 'acme-tutors/1.0',
+    }
+    if ACCOUNT:
+        headers['X-Account'] = ACCOUNT
+    if body:
+        headers['Content-Type'] = 'application/json'
+    if idempotency_key:
+        headers['Idempotency-Key'] = idempotency_key
+    response = requests.request(method, url, data=body.encode() or None, headers=headers, timeout=30)
+    answer = response.json() if response.content else None
+    if not response.ok:
+        raise RuntimeError(f'{response.status_code}: {answer}')
+    return answer
+
+
+print(abillio('GET', '/me/session/')['account']['slug'])
+```
+
+With the sample's `.env` loaded into the shell (`set -a; . ./.env; set +a`), it
+prints the account's slug. Three details matter in any language. The path you
+sign is the full path with the query string (`/company-api/v1/me/session/`),
+not the part after the base URL. The body you sign must be byte for byte the
+body you send, so serialise once and send that string (with `requests`, `data=`,
+not `json=`). And give your client a User-Agent of its own: Python's `urllib`
+default is refused at the edge with error 1010 before Abillio sees the request.
+
+## Verifying a webhook in another language
+
+The guide's Python, checked against the same vector the sample's tests use:
+
+```python
+import hashlib, hmac, time
+
+def verify(secret: str, headers, raw_body: bytes) -> bool:
+    ts = headers['X-Timestamp']
+    sent = headers['X-Signature'].split('v1=', 1)[1]
+    expected = hmac.new(secret.encode(), f'{ts}.'.encode() + raw_body, hashlib.sha256).hexdigest()
+    return hmac.compare_digest(sent, expected) and abs(time.time() - int(ts)) < 300
+```
+
+Hand it the raw request body (`request.get_data()` in Flask, `request.body` in
+Django, `await request.body()` in FastAPI), and parse the JSON only after it has
+returned `True`. Store what you received under a key made of the event and a
+hash of the body, so a retry is stored once.
+
+## What this sample leaves out
+
+The sample walks one path for one freelancer at a time, and a real integration
+does more around it. Invoices to your own clients rather than to yourself, and
+the hold Abillio may put on them while it checks the buyer, are in
+[invoicing as the intermediary](https://backend.abillio.dev/company-api/#intermediary).
+Hundreds of invoices in one request are [bulk issuing](https://backend.abillio.dev/company-api/#bulk).
+Sending an onboarded freelancer back to fix what their `requirements` list says
+is an update link, in [gateway onboarding](https://backend.abillio.dev/company-api/#gateway).
+Proposing the commission you keep on each invoice is in
+[commission](https://backend.abillio.dev/company-api/#commission). Contracts a
+freelancer must sign before you can be invoiced, and their `document.*` events,
+are in [webhooks](https://backend.abillio.dev/company-api/#webhooks). Payouts you
+start yourself, when your own client paid the invoice, are in
+[paying a freelancer](https://backend.abillio.dev/company-api/#paying).
+
+Two simplifications are deliberate. `data/state.json` holds one walk, so the
+README stays readable; a real integration keys all of it (the freelancer, the
+invoices, the idempotency keys) by its own user and keeps it in its database.
+And the sandbox simulators stand in for the bank: in production the money is a
+real transfer and the payout's fate is the bank's, so the same events arrive on
+their own time. Before going live, read the guide's
+[checklist](https://backend.abillio.dev/company-api/#golive).
+
+## License
+
+MIT, see [LICENSE](LICENSE).
