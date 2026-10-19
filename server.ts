@@ -331,6 +331,9 @@ export function createApp(deps: Deps): Hono {
       // and older than the payout, so what is stored is a fresh read, and only
       // onto the payout it was for.
       await keyed(state, simulateAction(payoutId, outcome), () => simulatePayout(deps.api, state, engagementId, payoutId, outcome), { once: true });
+      // `once` spent the key before this read: if the read fails, the stored
+      // payout stays stale until a poll tick (no PUBLIC_URL) or the next Pay
+      // or Simulate reads it again.
       const payout = await readPayout(deps.api, engagementId, payoutId);
       deps.state.update(s => { if (s.payout?.id === payoutId) s.payout = payout; });
       return render(c);
