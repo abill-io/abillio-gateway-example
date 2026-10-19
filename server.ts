@@ -13,6 +13,7 @@ import { Trace, trace as processTrace } from './lib/trace.ts';
 import { checkKey, type KeyReport } from './steps/01-key.ts';
 import { findEngagement, onboardingAction, onboardingBody, readSession, returnUrlFor, startOnboarding, type JoinForm } from './steps/02-onboard.ts';
 import { draftInvoice, findSelfClient, invoiceRequest, issueInvoice, pendingRequest } from './steps/03-issue.ts';
+import { findPayout, fundWallet, payInvoice, simulatePayout } from './steps/04-pay.ts';
 import { companyPage } from './views/company.ts';
 import { joinPage } from './views/join.ts';
 import { page } from './views/layout.ts';
@@ -191,6 +192,47 @@ export function createApp(deps: Deps): Hono {
     } catch (err) {
       return render(c, err);
     }
+  });
+
+  app.post('/steps/pay/fund', async c => {
+    const form = Object.fromEntries((await c.req.formData()).entries()) as Record<string, string>;
+    const state = deps.state.load();
+    try {
+      await fundWallet(deps.api, form.amount || '250.00', 'EUR', state.freelancer?.servicing_company_slug ?? 'abillio-ks');
+      return render(c);
+    } catch (err) { return render(c, err); }
+  });
+
+  app.post('/steps/pay/pay', async c => {
+    const state = deps.state.load();
+    const engagementId = state.freelancer?.engagement_id;
+    if (!state.invoice || !engagementId) return render(c, new Error('Issue an invoice first (step 3).'));
+    try {
+      const invoiceId = state.invoice.id;
+      // keyed() claims pay:<invoice> in the store before the call and forgets
+      // it only on a verified failure, so a retry after a timeout replays and
+      // never pays twice; the GETs stay outside it.
+      await keyed(state, `pay:${invoiceId}`, () => payInvoice(deps.api, state, invoiceId));
+      const payout = await findPayout(deps.api, engagementId, invoiceId);
+      // The invoice is read back on the account surface: there is no GET under /engagements/…/invoices/.
+      const invoice = await deps.api<{ status: string }>('GET', `/accounts/invoices/${encodeURIComponent(invoiceId)}/`);
+      deps.state.update(s => { if (s.invoice?.id === invoiceId) s.invoice.status = invoice.status; s.payout = payout; });
+      return render(c);
+    } catch (err) { return render(c, err); }
+  });
+
+  app.post('/steps/pay/simulate', async c => {
+    const form = Object.fromEntries((await c.req.formData()).entries()) as Record<string, string>;
+    const outcome = (['processing', 'paid', 'rejected', 'returned'] as const).find(o => o === form.outcome);
+    const state = deps.state.load();
+    const engagementId = state.freelancer?.engagement_id;
+    if (!outcome || !state.payout || !engagementId) return render(c, new Error('Pay the invoice first; then pick an outcome.'));
+    try {
+      const payoutId = state.payout.id;
+      const payout = await keyed(state, `simulate:${payoutId}:${outcome}`, () => simulatePayout(deps.api, state, engagementId, payoutId, outcome));
+      deps.state.update(s => { s.payout = payout; });
+      return render(c);
+    } catch (err) { return render(c, err); }
   });
 
   app.get('/back', c => c.html(page('Back', '<main class="one-col"><section class="panel"><h1>Thanks — you can close this window.</h1><p class="muted">Abillio sends the freelancer here when the popup has no opener to post to.</p></section></main>')));

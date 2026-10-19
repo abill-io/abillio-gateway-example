@@ -71,6 +71,20 @@ export function issuePanel(state: State): string {
   </section>`;
 }
 
+export function payPanel(state: State): string {
+  const inv = state.invoice;
+  const payout = state.payout;
+  const company = state.freelancer?.servicing_company_slug ?? 'abillio-ks';
+  const canPay = Boolean(inv && ['approved', 'pending', 'partial_paid', 'overdue'].includes(inv.status));
+  return `<section class="panel" id="step-4"><h2>Step 4 — Pay it from the wallet</h2>
+    <p><code>POST /accounts/wallet/sandbox/simulate-deposit</code> funds the sandbox wallet, <code>POST /accounts/wallet/pay-invoice/</code> pays what the invoice still owes, Abillio creates the payout; <code>POST …/payouts/{id}/sandbox/simulate</code> settles it as the bank would.</p>
+    <form method="post" action="/steps/pay/fund" class="inline"><label>Deposit <input name="amount" value="250.00" pattern="\\d+(\\.\\d{1,2})?"></label> EUR on <code>${esc(company)}</code> <button ${state.account ? '' : 'disabled'}>Fund the wallet</button></form>
+    <form method="post" action="/steps/pay/pay" class="inline"><button ${canPay ? '' : 'disabled'}>Pay invoice ${esc(inv?.number ?? '')}</button></form>
+    ${payout ? `<p>Payout <code>${esc(payout.id)}</code> — status <code>${esc(payout.status)}</code></p>
+    <form method="post" action="/steps/pay/simulate" class="inline">${['processing', 'paid', 'rejected', 'returned'].map(o => `<button name="outcome" value="${esc(o)}">Simulate ${esc(o)}</button>`).join(' ')}</form>` : ''}
+  </section>`;
+}
+
 export function placeholderPanel(n: number, title: string): string {
   return `<section class="panel" id="step-${esc(n)}"><h2>Step ${esc(n)} — ${esc(title)}</h2><p class="muted">Coming in a later task.</p></section>`;
 }
@@ -82,7 +96,7 @@ export function companyPage(input: CompanyPageInput): string {
       ${keyPanel(input.key, input.state)}
       ${onboardingPanel(input.state)}
       ${issuePanel(input.state)}
-      ${placeholderPanel(4, 'Pay')}
+      ${payPanel(input.state)}
       ${placeholderPanel(5, 'Events')}
       <section class="panel"><h2>What we store</h2><p class="muted"><code>data/state.json</code> — the fields a real integration keeps in its own database.</p>${jsonBlock(input.state)}</section>
     </div>

@@ -367,3 +367,56 @@ test('a refusal forgets only the key its own call sent: a key and a request anot
   assert.equal(state.load().idempotency['draft:e1'], 'their-key');
   assert.deepEqual(state.load().invoice_request, theirs);
 });
+
+// --- Step 4 -------------------------------------------------------------------
+
+test('the pay routes fund, pay and settle, storing the payout', async () => {
+  const api = (async (method: string, path: string) => {
+    if (path === '/accounts/wallet/sandbox/simulate-deposit') return [{ company_slug: 'abillio-ks', available: { amount: '250.00' } }];
+    if (path === '/accounts/wallet/pay-invoice/') return { created: true, operation_id: 'op-1' };
+    if (path === '/engagements/e1/payouts/') return { items: [{ id: 'p1', status: 'pending', invoice_uuid: 'inv-1' }] };
+    if (path === '/engagements/e1/payouts/p1/sandbox/simulate') return { id: 'p1', status: 'paid' };
+    if (path === '/accounts/invoices/inv-1/') return { id: 'inv-1', invoice_number: 'A-1', status: 'paid', public_url: 'u' };
+    throw new Error(`${method} ${path}`);
+  }) as Api;
+  const initial = defaultState();
+  initial.account = { id: 'a1', name: 'Acme', slug: 'acme' };
+  initial.freelancer = { email: 'anna@example.com', session_id: 's1', session_url: 'https://new.abillio.dev/s/t', engagement_id: 'e1', servicing_company_slug: 'abillio-ks' };
+  initial.invoice = { id: 'inv-1', number: 'A-1', status: 'approved', public_url: 'u' };
+  const { app, state } = appWith(api, memoryState(initial));
+  assert.equal((await app.request('/steps/pay/fund', { method: 'POST', body: new URLSearchParams({ amount: '250.00' }), headers: { 'content-type': 'application/x-www-form-urlencoded' } })).status, 200);
+  assert.equal((await app.request('/steps/pay/pay', { method: 'POST' })).status, 200);
+  assert.equal(state.load().payout?.status, 'pending');
+  assert.equal((await app.request('/steps/pay/simulate', { method: 'POST', body: new URLSearchParams({ outcome: 'paid' }), headers: { 'content-type': 'application/x-www-form-urlencoded' } })).status, 200);
+  assert.equal(state.load().payout?.status, 'paid');
+});
+
+test('Pay keeps its key until Abillio refuses in its envelope: a lost answer and a repeated press replay, never a second payment', async () => {
+  const keys: string[] = [];
+  const outcomes: (() => unknown)[] = [
+    () => { throw new AbillioError(409, { error: { code: 'insufficient_balance', message: 'Insufficient balance' } }, ''); },
+    () => { throw new TypeError('fetch failed'); },
+    () => ({ created: true, operation_id: 'op-1' }),
+    () => ({ created: false, operation_id: 'op-1' }),
+  ];
+  const api = (async (method: string, path: string, _b: unknown, opts?: { idempotencyKey?: string }) => {
+    if (method === 'POST' && path === '/accounts/wallet/pay-invoice/') { keys.push(opts?.idempotencyKey ?? ''); return outcomes[keys.length - 1](); }
+    if (path === '/engagements/e1/payouts/') return { items: [{ id: 'p1', status: 'pending', invoice_uuid: 'inv-1' }] };
+    if (path === '/accounts/invoices/inv-1/') return { status: 'paid' };
+    throw new Error(`unexpected ${method} ${path}`);
+  }) as Api;
+  const initial = joinedState();
+  initial.invoice = { id: 'inv-1', number: 'INV-1', status: 'pending', public_url: 'https://new.abillio.dev/invoice/inv-1' };
+  // fileLikeState, like state.json: a key minted on the copy a press loaded is
+  // lost unless the route stores it.
+  const { app } = appWith(api, fileLikeState(initial));
+  const press = async () => (await app.request('/steps/pay/pay', { method: 'POST' })).text();
+  assert.ok((await press()).includes('insufficient_balance'), 'the refusal is shown as is');
+  await press();
+  await press();
+  await press();
+  assert.equal(keys.length, 4);
+  assert.notEqual(keys[1], keys[0], 'refused in its envelope: nothing was paid, so the next press is a new attempt');
+  assert.equal(keys[2], keys[1], 'no answer: the payment may have gone through, so the retry sends the same key');
+  assert.equal(keys[3], keys[2], 'a press after paying replays under the same key');
+});
