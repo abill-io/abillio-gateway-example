@@ -69,3 +69,10 @@ export function idempotencyKeyFor(state: State, action: string): string {
   state.idempotency[action] = minted;
   return minted;
 }
+
+// Abillio keeps the key of a call it answered with an error spent: a retry
+// with that key is a 409. Forgetting it makes the next press mint a new key,
+// so it is a new attempt.
+export function forgetIdempotencyKey(state: State, action: string): void {
+  delete state.idempotency[action];
+}

@@ -3,11 +3,22 @@ import assert from 'node:assert/strict';
 import { createApp } from '../server.ts';
 import { Trace } from '../lib/trace.ts';
 import { defaultState, type State } from '../lib/store.ts';
-import type { Api } from '../lib/abillio.ts';
+import { AbillioError, type Api } from '../lib/abillio.ts';
 
 export function memoryState(initial: State = defaultState()) {
   let current = initial;
   return { load: () => current, update: (fn: (s: State) => void) => { fn(current); return current; } };
+}
+
+// Like data/state.json: every load() is a fresh copy, so a key minted on the
+// copy a route loaded is lost unless that route's update() writes it back.
+// memoryState hands out one shared object and cannot show that.
+export function fileLikeState(initial: State = defaultState()) {
+  let saved = structuredClone(initial);
+  return {
+    load: () => structuredClone(saved),
+    update: (fn: (s: State) => void) => { const next = structuredClone(saved); fn(next); saved = next; return structuredClone(next); },
+  };
 }
 
 export function appWith(api: Api, state = memoryState(), publicUrl: string | null = null, onStored: () => void = () => {}, now: () => number = Date.now) {
@@ -82,4 +93,25 @@ test('the join page rejects a malformed e-mail before calling Abillio', async ()
   const res = await app.request('/join', { method: 'POST', body: new URLSearchParams({ first_name: 'A', last_name: 'B', email: 'nope', tax_country: 'LV', locale: 'lv' }), headers: { 'content-type': 'application/x-www-form-urlencoded' } });
   assert.equal(res.status, 422);
   assert.equal(called, false);
+});
+
+test('a resubmitted /join reuses the key after a success or a network failure, and mints a new one after an Abillio error', async () => {
+  const keys: (string | undefined)[] = [];
+  const session = { session_id: 's1', url: 'https://new.abillio.dev/s/tok', status: 'awaiting_freelancer', purpose: 'onboarding' };
+  const outcomes: (() => unknown)[] = [
+    () => { throw new TypeError('fetch failed'); },
+    () => { throw new AbillioError(409, { error: { code: 'requirements_complete', message: 'Nothing left to complete.' } }, ''); },
+    () => session,
+    () => session,
+  ];
+  const api = (async (_m: string, _p: string, _b: unknown, opts?: { idempotencyKey?: string }) => {
+    keys.push(opts?.idempotencyKey);
+    return outcomes[keys.length - 1]();
+  }) as Api;
+  const { app } = appWith(api, fileLikeState());
+  const press = async () => (await app.request('/join', { method: 'POST', body: new URLSearchParams({ first_name: 'Anna', last_name: 'Ozola', email: 'Anna@Example.com', tax_country: 'LV', locale: 'lv' }), headers: { 'content-type': 'application/x-www-form-urlencoded' } })).status;
+  assert.deepEqual([await press(), await press(), await press(), await press()], [502, 502, 200, 200]);
+  assert.equal(keys[1], keys[0], 'a network failure leaves the outcome unknown: the next press reuses the key');
+  assert.notEqual(keys[2], keys[1], 'Abillio answered with an error: the next press is a new attempt');
+  assert.equal(keys[3], keys[2], 'after a success a repeated press replays');
 });

@@ -40,7 +40,14 @@
     // the URL is set once the server has minted the session.
     popup = window.open('about:blank', 'abillio', 'popup,width=520,height=760');
     const res = await fetch('/join', { method: 'POST', body: new URLSearchParams(new FormData(form)) });
-    if (!res.ok) { note.textContent = `Could not start: ${await res.text()}`; popup && popup.close(); return; }
+    if (!res.ok) {
+      note.textContent = `Could not start: ${await res.text()}`;
+      popup && popup.close();
+      // app.js disabled the button a tick after the submit. Nothing navigates
+      // away on an error, so give it back for a corrected resubmit.
+      for (const b of form.querySelectorAll('button')) b.disabled = false;
+      return;
+    }
     const session = await res.json();
     abillioOrigin = session.origin;
     if (popup) popup.location = session.url; else note.textContent = `Popup blocked — open ${session.url} yourself.`;

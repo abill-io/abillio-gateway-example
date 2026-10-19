@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, readFileSync, existsSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { defaultState, loadState, saveState, updateState, idempotencyKeyFor } from '../lib/store.ts';
+import { defaultState, loadState, saveState, updateState, idempotencyKeyFor, forgetIdempotencyKey } from '../lib/store.ts';
 
 function tempFile(): string {
   return join(mkdtempSync(join(tmpdir(), 'gw-')), 'state.json');
@@ -49,4 +49,11 @@ test('idempotency keys are minted once per action and reused', () => {
   assert.match(first, /^[0-9a-f-]{36}$/);
   assert.equal(idempotencyKeyFor(state, 'issue:eng-1'), first);
   assert.notEqual(idempotencyKeyFor(state, 'pay:inv-1'), first);
+});
+
+test('a forgotten key is minted afresh, so the next press is a new attempt', () => {
+  const state = defaultState();
+  const first = idempotencyKeyFor(state, 'onboard:anna@example.com');
+  forgetIdempotencyKey(state, 'onboard:anna@example.com');
+  assert.notEqual(idempotencyKeyFor(state, 'onboard:anna@example.com'), first);
 });

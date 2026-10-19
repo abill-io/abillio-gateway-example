@@ -7,7 +7,7 @@ import { Hono } from 'hono';
 import { streamSSE } from 'hono/streaming';
 import { AbillioError, createApi, type Api } from './lib/abillio.ts';
 import { loadEnv } from './lib/env.ts';
-import { loadState, updateState, type State } from './lib/store.ts';
+import { forgetIdempotencyKey, loadState, updateState, type State } from './lib/store.ts';
 import { Trace, trace as processTrace } from './lib/trace.ts';
 import { checkKey, type KeyReport } from './steps/01-key.ts';
 import { findEngagement, readSession, returnUrlFor, startOnboarding } from './steps/02-onboard.ts';
@@ -69,11 +69,20 @@ export function createApp(deps: Deps): Hono {
     const form = Object.fromEntries((await c.req.formData()).entries()) as Record<string, string>;
     if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(form.email ?? '')) return c.text('e-mail looks wrong', 422);
     const locale = form.locale === 'en' ? 'en' : 'lv';
+    // startOnboarding mints the action's key into this loaded copy; every
+    // outcome below writes the copy's keys back to the store.
+    const state = deps.state.load();
     try {
-      const session = await startOnboarding(deps.api, deps.state.load(), { first_name: form.first_name ?? '', last_name: form.last_name ?? '', email: form.email, tax_country: form.tax_country || 'LV', locale }, returnUrlFor(deps.publicUrl, deps.port));
-      deps.state.update(s => { s.freelancer = { email: form.email, session_id: session.session_id, session_url: session.url, engagement_id: null, servicing_company_slug: null }; s.invoice = null; s.payout = null; });
+      const session = await startOnboarding(deps.api, state, { first_name: form.first_name ?? '', last_name: form.last_name ?? '', email: form.email, tax_country: form.tax_country || 'LV', locale }, returnUrlFor(deps.publicUrl, deps.port));
+      deps.state.update(s => { s.freelancer = { email: form.email, session_id: session.session_id, session_url: session.url, engagement_id: null, servicing_company_slug: null }; s.invoice = null; s.payout = null; s.idempotency = state.idempotency; });
       return c.json(session);
     } catch (err) {
+      // Abillio answered with an error and keeps that key spent, so the key
+      // of the action startOnboarding keys on is forgotten: the next press is
+      // a new attempt. Any other failure (the network) leaves the outcome
+      // unknown, and the kept key lets the next press replay it if it landed.
+      if (err instanceof AbillioError) forgetIdempotencyKey(state, `onboard:${form.email.toLowerCase()}`);
+      deps.state.update(s => { s.idempotency = state.idempotency; });
       return c.text(err instanceof AbillioError ? `${err.code}: ${err.message}` : String(err), 502);
     }
   });
