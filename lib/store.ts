@@ -28,7 +28,9 @@ export type InvoiceRequest = {
 };
 
 export type State = {
-  account: { id: string; name: string; slug: string } | null;
+  // From the key check. `is_sandbox` is what every route that writes to
+  // Abillio asks before it does (server.ts).
+  account: { id: string; name: string; slug: string; is_sandbox: boolean } | null;
   freelancer: {
     email: string;
     session_id: string;

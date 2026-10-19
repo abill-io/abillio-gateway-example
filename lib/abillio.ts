@@ -115,6 +115,7 @@ const REQUEST_REDACTED_KEYS = new Set([
   'phone', 'phone_number', 'address', 'address_line1', 'address_line2', 'city', 'postal_code',
   // The contact and address spellings of the client row on GET /accounts/clients/.
   'accounting_email', 'contact_person', 'address_formatted', 'address_street', 'address_apartment', 'address_city', 'address_state', 'address_postal_code',
+  'address_district', 'address_parish', 'address_village', 'address_coordinates', 'pasts_lv_address_id',
 ]);
 const RESPONSE_REDACTED_KEYS = new Set([...REQUEST_REDACTED_KEYS, 'email', 'first_name', 'last_name']);
 

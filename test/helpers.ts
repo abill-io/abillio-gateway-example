@@ -7,6 +7,14 @@ export function memoryState(initial: State = defaultState()) {
   return { load: () => current, update: (fn: (s: State) => void) => { fn(current); return current; } };
 }
 
+// What the key check stores for a sandbox key: every route that writes to
+// Abillio runs only on such an account (or with ALLOW_PRODUCTION).
+export function sandboxState(): State {
+  const s = defaultState();
+  s.account = { id: 'a1', name: 'Acme', slug: 'acme', is_sandbox: true };
+  return s;
+}
+
 // Like data/state.json: every load() is a fresh copy, so a key minted on the
 // copy a route loaded is lost unless that route's update() writes it back.
 // memoryState hands out one shared object and cannot show that.

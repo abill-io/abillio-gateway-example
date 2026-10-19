@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { SUBSCRIBED_EVENTS, connectWebhooks, pollForEvents, recordPoll, sendTestDelivery } from '../steps/05-events.ts';
 import { AbillioError, type Api } from '../lib/abillio.ts';
-import { defaultState, idempotencyKeyFor, type Keyed } from '../lib/store.ts';
+import { defaultState, idempotencyKeyFor, type Keyed, type State, type StoredEvent } from '../lib/store.ts';
 import { memoryState } from './helpers.ts';
 
 // The step tests check the calls and their keys; the claim-before-call and
@@ -85,6 +85,30 @@ function polled(answers: Record<string, () => unknown> = {}) {
   }) as Api;
   return { state, api };
 }
+
+test('the session is read until its completion is recorded, by a poll or by a webhook, and never without a session id', async t => {
+  const warn = t.mock.method(console, 'warn', () => {});
+  const completed = (via: StoredEvent['via']): StoredEvent => ({
+    received_at: '2026-10-19T12:00:00.000Z', event_type: 'engagement.onboarding.completed', via,
+    data: { session_id: 's1', can_be_paid: true, purpose: 'onboarding' },
+    dedupe_key: via === 'poll' ? 's1' : 'engagement.onboarding.completed:0f1e',
+  });
+  const cases: [string, (s: State) => void][] = [
+    ['recorded by a poll', s => { s.events.push(completed('poll')); }],
+    ['recorded by a webhook', s => { s.events.push(completed('webhook')); }],
+    // A freelancer stored by hand, without a session: GET /onboarding/sessions/ is a 405.
+    ['no session id', s => { s.freelancer!.session_id = ''; }],
+  ];
+  for (const [label, prepare] of cases) {
+    const { state, api } = polled();
+    prepare(state);
+    const reads: string[] = [];
+    const counting = (async (method: 'GET', path: string) => { reads.push(path); return api(method, path); }) as Api;
+    await pollForEvents(counting, state);
+    assert.deepEqual(reads, ['/accounts/invoices/inv-1/', '/engagements/e1/payouts/p1'], label);
+  }
+  assert.equal(warn.mock.callCount(), 0, 'nothing was read that could fail');
+});
 
 test('a read that fails is logged once and the poll still reports what the other two found', async t => {
   const warn = t.mock.method(console, 'warn', () => {});

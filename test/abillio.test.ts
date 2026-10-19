@@ -15,6 +15,7 @@ const env: Env = {
   account: '',
   publicUrl: null,
   port: 4000,
+  allowProduction: false,
 };
 
 test('builds the message the backend builds and signs it the way the backend verifies', () => {
@@ -180,6 +181,7 @@ test('redactForTrace masks each key the page never types, in a request as in a r
     'address', 'address_line1', 'address_line2', 'city', 'postal_code',
     // The spellings of the client row on GET /accounts/clients/.
     'accounting_email', 'contact_person', 'address_formatted', 'address_street', 'address_apartment', 'address_city', 'address_state', 'address_postal_code',
+    'address_district', 'address_parish', 'address_village', 'address_coordinates', 'pasts_lv_address_id',
   ];
   const real = Object.fromEntries(never.map(key => [key, `real ${key}`]));
   const hidden = Object.fromEntries(never.map(key => [key, '[redacted]']));

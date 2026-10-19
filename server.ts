@@ -35,6 +35,8 @@ export type Deps = {
   // The polling fallback runs inside the app on this interval; null = off
   // (tests, and any run with a PUBLIC_URL).
   pollIntervalMs: number | null;
+  // ALLOW_PRODUCTION=1: the write routes may act on a production account.
+  allowProduction: boolean;
 };
 
 export function createApp(deps: Deps): Hono {
@@ -107,13 +109,40 @@ export function createApp(deps: Deps): Hono {
 
   app.use('/public/*', serveStatic({ root: './' }));
 
+  // Every route that writes to Abillio runs only against a sandbox account.
+  // The sample mints links, invoices and payments with whatever key it is
+  // given, and a key pasted from production would make them real. The key
+  // check stores which kind of account the key reaches; until it has, nothing
+  // is sent. ALLOW_PRODUCTION=1 is the way past for a partner who means it.
+  const sandboxRefusal = (): string | null => {
+    if (deps.allowProduction) return null;
+    const account = deps.state.load().account;
+    if (account?.is_sandbox === true) return null;
+    return account?.is_sandbox === false
+      ? 'This back office runs against sandbox accounts only (the key belongs to a production account).'
+      : 'Check the key first (step 1): this back office runs against sandbox accounts only.';
+  };
+  // /join answers the join page's fetch in plain text; the others render the back office.
+  app.post('/join', async (c, next) => {
+    const refusal = sandboxRefusal();
+    if (refusal) return c.text(refusal, 403);
+    await next();
+  });
+  for (const path of ['/steps/issue', '/steps/pay/*', '/steps/events/*', '/reset']) {
+    app.post(path, async (c, next) => {
+      const refusal = sandboxRefusal();
+      if (refusal) return render(c, new Error(refusal));
+      await next();
+    });
+  }
+
   app.get('/', c => render(c));
 
   app.post('/steps/key', async c => {
     try {
       lastKey = await checkKey(deps.api);
-      const { id, name, slug } = lastKey.account;
-      deps.state.update(s => { s.account = { id, name, slug }; });
+      const { id, name, slug, is_sandbox } = lastKey.account;
+      deps.state.update(s => { s.account = { id, name, slug, is_sandbox: is_sandbox === true }; });
       return render(c);
     } catch (err) {
       return render(c, err);
@@ -402,6 +431,7 @@ export function main(): void {
     onStored: () => {},
     now: Date.now,
     pollIntervalMs: env.publicUrl ? null : 5000,
+    allowProduction: env.allowProduction,
   });
   serve({ fetch: app.fetch, port: env.port }, info => {
     console.log(`Abillio gateway example on http://localhost:${info.port}` + (env.publicUrl ? ` (public: ${env.publicUrl})` : ' (no PUBLIC_URL: webhooks off, polling on)'));

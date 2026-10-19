@@ -15,6 +15,9 @@ test('reads the key, defaults the url and port, keeps optional values empty', ()
   assert.equal(env.port, 4000);
   assert.equal(env.account, '');
   assert.equal(env.publicUrl, null);
+  assert.equal(env.allowProduction, false, 'the write routes stay sandbox-only');
+  assert.equal(loadEnv({ ...good, ALLOW_PRODUCTION: '1' }).allowProduction, true);
+  assert.equal(loadEnv({ ...good, ALLOW_PRODUCTION: 'yes' }).allowProduction, false, 'only 1 opens it');
 });
 
 test('strips a trailing slash from the api url and the public url', () => {

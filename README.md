@@ -42,12 +42,31 @@ The settings live in `.env`, which the npm scripts load with `node --env-file`:
 | `PUBLIC_URL` | A public https URL of this server, for webhooks (step 5). Leave it empty and the server polls instead. |
 | `PORT` | 4000 unless you say otherwise. |
 | `STATE_FILE` | Where the state lives; `data/state.json` unless you say otherwise. |
+| `ALLOW_PRODUCTION` | Leave it unset. `1` lets the buttons write to a production account (see [Keep it safe](#keep-it-safe)). |
 
 The other commands: `npm test` runs the unit tests (no network; the signing and
 the webhook verification are checked against vectors produced by Abillio's own
 signer), `npm run typecheck` runs `tsc`, `npm run smoke` runs the story without a
 browser (see [The smoke test](#the-smoke-test)) and `npm run tunnel` prints how
 to give this machine a public URL.
+
+## Keep it safe
+
+Two files hold secrets, and neither belongs in a repository. `.env` holds
+`ABILLIO_PRIVATE_KEY`, the seed that signs as your company. `data/state.json`
+holds the webhook signing secret in clear, and whoever has it can forge a
+delivery your receiver will believe. Both are in `.gitignore`, but only at their
+default paths: a `STATE_FILE` somewhere else is not ignored, so keep it out of
+the repository yourself.
+
+Use a sandbox key only. The sample mints links, invoices and payments with
+whatever key it is given, so every button that writes to Abillio first asks
+what **Check the key** stored: until it has seen a sandbox account, the button
+refuses and sends nothing, and on a production account it says *This back
+office runs against sandbox accounts only (the key belongs to a production
+account)*. `ALLOW_PRODUCTION=1` in `.env` lifts the guard, for a partner who has
+read the code and means to run it against real money; the smoke test refuses a
+production account regardless.
 
 ## How it is put together
 
@@ -70,11 +89,14 @@ and response body as they went over the wire, minus what the page must not show
 to whoever opens it. Headers are never recorded, and any body key named
 `secret`, `private_key`, `password`, `token` or `user_email` reads `[redacted]`.
 Personal data reads `[redacted]` too: in an answer from Abillio, every key that
-holds a person's e-mail address, name, phone number, address, bank account,
-personal code or registration or VAT number (`GET /accounts/clients/` returns
-a row for the account owner's own company, with the owner's e-mail on it); in a
-request, only the keys no form of the sample types, so the e-mail and names
-typed on the join page and the invoice description show as typed. The
+holds an e-mail address, a first, last or legal name, a contact person, a phone
+number, an address, a bank account, a personal code or a registration or VAT
+number (`GET /accounts/clients/` returns a row for the account owner's own
+company, with the owner's e-mail and address on it); in a request, only the
+keys no form of the sample types, so the e-mail and names typed on the join
+page and the invoice description show as typed. Display names (`name`,
+`display_name`) are not masked: they are the company's own name and the name
+typed on the join page. The
 **What we store** panel shows `data/state.json`, with the webhook signing secret
 cut down to its last four characters; `GET /api/state` and `GET /api/trace`
 serve the same two things as JSON. On the hosted copy everyone shares one walk:
@@ -180,8 +202,9 @@ and three of the entries `GET /me/authorization/` returned:
 The page lists the twelve actions the steps use (`NEEDED_ACTIONS` in
 `steps/01-key.ts`) first and folds the rest away. `context_required` is a yes:
 the call itself carries what the action needs, such as the invoice to pay.
-The step writes `account: { id, name, slug }` to `data/state.json`; step 3 needs
-the account id to find the self-client.
+The step writes `account: { id, name, slug, is_sandbox }` to `data/state.json`.
+Step 3 needs the account id to find the self-client, and every button that
+writes to Abillio needs `is_sandbox` to be true (see [Keep it safe](#keep-it-safe)).
 
 **What can go wrong.** A 401 means Abillio refused the signature, and the page
 says the usual causes: this machine's clock is more than 300 seconds off,
@@ -586,8 +609,9 @@ two `engagement.requirements_updated`, `engagement.onboarding.completed`,
 `engagement.payout.completed`.
 
 **Without a public URL.** There is no Connect button, and every five seconds the
-server makes the same reads the steps make (`GET /onboarding/sessions/{id}`,
-`GET /accounts/invoices/{id}/`, `GET /engagements/{id}/payouts/{payout_id}`),
+server makes the same reads the steps make (`GET /onboarding/sessions/{id}`
+until the onboarding's completion is recorded, `GET /accounts/invoices/{id}/`
+and `GET /engagements/{id}/payouts/{payout_id}`),
 compares them with `data/state.json` and stores each change as an event named
 the way the webhook names it, marked `poll`; the walk without a tunnel stored
 `engagement.onboarding.completed` and `engagement.invoice.paid` that way. The
@@ -618,7 +642,9 @@ are not demo data and stay on Abillio. The sample then forgets the walk:
 subscription, which belong to the account and outlive the reset, together with
 a connect request still pending and the keys it went out under (re-sent under a
 new key, that request would create a second channel or subscription). A refused
-reset forgets nothing, since the sandbox still holds the walk.
+reset forgets nothing, since the sandbox still holds the walk. The account goes
+with the rest, so press **Check the key** again before the next walk: the
+buttons that write to Abillio wait for it.
 
 ## The smoke test
 
@@ -634,11 +660,13 @@ set SMOKE_ENGAGEMENT_ID to a payable engagement to also issue, pay and settle
 ```
 
 The popup is the freelancer's to walk, so the rest needs an engagement that can
-already be paid. Given one, the smoke issues a 10.00 EUR invoice, funds the
-wallet, pays, finds the automatic payout and settles it:
+already be paid. Given one, the smoke issues an invoice for 10.00 EUR plus VAT
+(12.10 EUR in total for a Latvian freelancer), funds the wallet, pays, finds the
+automatic payout, settles it, and passes only when the payout then reads
+`paid`:
 
 ```
-$ SMOKE_ENGAGEMENT_ID=01a13b91-f093-74a2-9561-7375ce2af831 npm run smoke
+$ SMOKE_ENGAGEMENT_ID=01a13b91-f093-… npm run smoke
 key ok: Artūrs Test Business Demo (arturs-test-business-demo), sandbox=true
 onboarding link minted for smoke+mvfpqfl1@example.com: https://new.abillio.dev/s/<token>
 issued DEMO-HTW7J-YRM-3 (pending), 12.10 EUR
@@ -652,7 +680,9 @@ The deposit goes to `abillio-ks`; set `SMOKE_COMPANY` to the slug of the
 company that serves the engagement's freelancer when that is another one. The
 smoke keeps its state in memory, so every run is a new invoice and a new
 payment and `data/state.json` is never touched, and it exits with 1 on the first
-error, so it can gate a release.
+error, so it can gate a release. An engagement id that is not this account's is
+refused with a 403 or a 404 on the draft, and the smoke then says to check
+`SMOKE_ENGAGEMENT_ID` rather than the key.
 
 ## Signing requests in another language
 

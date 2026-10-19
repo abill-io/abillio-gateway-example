@@ -117,10 +117,13 @@ export async function pollForEvents(api: Api, state: State, now: () => number = 
       return null;
     }
   };
-  const seen = (type: string, marker: string) => state.events.some(e => e.via === 'poll' && e.event_type === type && e.dedupe_key === marker);
-  const session = await tryRead('the session read', () => readSession(api, f.session_id));
-  if (session?.can_be_paid && !seen('engagement.onboarding.completed', f.session_id)) {
-    found.events.push(event('engagement.onboarding.completed', { session_id: f.session_id, can_be_paid: true, purpose: 'onboarding' }, f.session_id));
+  // The session is read until its completion is recorded, by a poll or by a
+  // webhook (both carry the session id), and not at all for a freelancer
+  // stored without one.
+  const completed = state.events.some(e => e.event_type === 'engagement.onboarding.completed' && e.data.session_id === f.session_id);
+  if (f.session_id && !completed) {
+    const session = await tryRead('the session read', () => readSession(api, f.session_id));
+    if (session?.can_be_paid) found.events.push(event('engagement.onboarding.completed', { session_id: f.session_id, can_be_paid: true, purpose: 'onboarding' }, f.session_id));
   }
   const engagementId = f.engagement_id;
   const invoice = state.invoice;

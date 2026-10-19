@@ -22,7 +22,7 @@ export function keyPanel(key: KeyReport | null, state: State): string {
   return `<section class="panel" id="step-1"><h2>Step 1 — Does the key work?</h2>
     <p><code>GET /me/session/</code> says who the key acts as; <code>GET /me/authorization/</code> lists what it may do. A <b>forbidden</b> row here explains a later 403 before it happens.</p>
     <form method="post" action="/steps/key"><button>Check the key</button></form>
-    ${state.account ? `<p>Acting as <b>${esc(state.account.name)}</b> (<code>${esc(state.account.slug)}</code>)${key?.account.is_sandbox ? ' <span class="tag">sandbox</span>' : ''}.</p>` : ''}
+    ${state.account ? `<p>Acting as <b>${esc(state.account.name)}</b> (<code>${esc(state.account.slug)}</code>)${state.account.is_sandbox === true ? ' <span class="tag">sandbox</span>' : state.account.is_sandbox === false ? ' <span class="tag">production</span>' : ''}.</p>` : ''}
     ${table}
   </section>`;
 }
@@ -90,7 +90,7 @@ export function payPanel(state: State): string {
     <p><code>POST /accounts/wallet/sandbox/simulate-deposit</code> funds the sandbox wallet, <code>POST /accounts/wallet/pay-invoice/</code> pays what the invoice still owes, Abillio creates the payout; <code>POST …/payouts/{id}/sandbox/simulate</code> settles it as the bank would.</p>
     <form method="post" action="/steps/pay/fund"><label>Deposit <input name="amount" value="250.00" required pattern="\\d+(\\.\\d{1,2})?"></label> EUR on <code>${esc(company)}</code> <button ${state.account ? '' : 'disabled'}>Fund the wallet</button></form>
     <form method="post" action="/steps/pay/pay"><button ${payable || paid ? '' : 'disabled'}>${esc(payLabel)}</button></form>
-    ${paid && !payout ? '<p class="muted">No payout was created for this payment — the freelancer cannot be paid yet (payout method or verification missing); the <code>wallet.auto_payout_blocked</code> event says why.</p>' : ''}
+    ${paid && !payout ? '<p class="muted">No payout was created for this payment: the invoice carries no verified payout method, or Abillio refused the payout. A refusal leaves a <code>wallet.auto_payout_blocked</code> notification in your Abillio inbox; it is an inbox notification, not a webhook event.</p>' : ''}
     ${payout ? `<p>Payout <code>${esc(payout.id)}</code> — status <code>${esc(payout.status)}</code></p>
     <form method="post" action="/steps/pay/simulate">${PAYOUT_OUTCOMES.map(o => `<button name="outcome" value="${esc(o)}">Simulate ${esc(o)}</button>`).join(' ')}</form>` : ''}
   </section>`;
@@ -112,7 +112,9 @@ export function eventsPanel(state: State, publicUrl: string | null): string {
 export function companyPage(input: CompanyPageInput): string {
   // `data-confirm` is asked by app.js, which then leaves the button usable on
   // a "no" (an inline onsubmit would not stop app.js from disabling it).
-  const body = `<main class="two-col">
+  // `data-events` is how many events this page shows: app.js compares it with
+  // the store once its event stream connects, to catch one stored in between.
+  const body = `<main class="two-col" data-events="${esc(input.state.events.length)}">
     <div>
       <form method="post" action="/reset" class="right" data-confirm="Reset the sandbox demo data and forget this walk?"><button class="secondary">Start over</button></form>
       ${errorBox(input.error)}

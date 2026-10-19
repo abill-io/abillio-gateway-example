@@ -5,11 +5,11 @@ import { createApp } from '../server.ts';
 import { Trace } from '../lib/trace.ts';
 import { defaultState, type State } from '../lib/store.ts';
 import { AbillioError, type Api } from '../lib/abillio.ts';
-import { fileLikeState, memoryState } from './helpers.ts';
+import { fileLikeState, memoryState, sandboxState } from './helpers.ts';
 
-export function appWith(api: Api, state = memoryState(), publicUrl: string | null = null, onStored: () => void = () => {}, now: () => number = Date.now, pollIntervalMs: number | null = null) {
+export function appWith(api: Api, state = memoryState(), publicUrl: string | null = null, onStored: () => void = () => {}, now: () => number = Date.now, pollIntervalMs: number | null = null, allowProduction = false) {
   const trace = new Trace();
-  const app = createApp({ api, state, trace, publicUrl, port: 4000, abillioOrigin: () => 'https://new.abillio.dev', onStored, now, pollIntervalMs });
+  const app = createApp({ api, state, trace, publicUrl, port: 4000, abillioOrigin: () => 'https://new.abillio.dev', onStored, now, pollIntervalMs, allowProduction });
   return { app, trace, state };
 }
 
@@ -33,7 +33,7 @@ test('POST /steps/key stores the account and shows the actions table; an error r
   const html = await res.text();
   assert.ok(html.includes('Acme') && html.includes('freelancers.invite'));
   assert.ok(!html.includes('dev@acme.test'), "the key owner's e-mail is not on the page");
-  assert.equal(state.load().account?.slug, 'acme');
+  assert.deepEqual(state.load().account, { id: 'a1', name: 'Acme', slug: 'acme', is_sandbox: true }, 'with whether it is a sandbox, which every write route asks');
 });
 
 test('GET /api/state returns the stored state as JSON, without the webhook secret', async () => {
@@ -60,7 +60,7 @@ test('the join page opens the popup from the session url and polls the status', 
     if (path.startsWith('/engagements/?search=')) return { count: 1, items: [{ id: 'e1', status: 'invited', counterparty: { email: 'anna@example.com', servicing_company: { slug: 'abillio-ks' } }, compliance: { can_be_paid: false } }] };
     throw new Error(`${method} ${path}`);
   }) as Api;
-  const { app, state } = appWith(api);
+  const { app, state } = appWith(api, memoryState(sandboxState()));
   const form = new URLSearchParams({ first_name: 'Anna', last_name: 'Ozola', email: 'anna@example.com', tax_country: 'LV', locale: 'lv' });
   const created = await app.request('/join', { method: 'POST', body: form, headers: { 'content-type': 'application/x-www-form-urlencoded' } });
   assert.equal(created.status, 200);
@@ -77,7 +77,7 @@ test('the join page opens the popup from the session url and polls the status', 
 
 test('the join page rejects a malformed e-mail before calling Abillio', async () => {
   let called = false;
-  const { app } = appWith((async () => { called = true; return {}; }) as Api);
+  const { app } = appWith((async () => { called = true; return {}; }) as Api, memoryState(sandboxState()));
   const res = await app.request('/join', { method: 'POST', body: new URLSearchParams({ first_name: 'A', last_name: 'B', email: 'nope', tax_country: 'LV', locale: 'lv' }), headers: { 'content-type': 'application/x-www-form-urlencoded' } });
   assert.equal(res.status, 422);
   assert.equal(called, false);
@@ -97,7 +97,7 @@ test('a resubmitted /join reuses the key after a success, a network failure or a
     keys.push(opts?.idempotencyKey);
     return outcomes[keys.length - 1]();
   }) as Api;
-  const { app } = appWith(api, fileLikeState());
+  const { app } = appWith(api, fileLikeState(sandboxState()));
   const press = async () => (await app.request('/join', { method: 'POST', body: new URLSearchParams({ first_name: 'Anna', last_name: 'Ozola', email: 'Anna@Example.com', tax_country: 'LV', locale: 'lv' }), headers: { 'content-type': 'application/x-www-form-urlencoded' } })).status;
   assert.deepEqual([await press(), await press(), await press(), await press(), await press()], [502, 502, 502, 200, 200]);
   assert.equal(keys[1], keys[0], 'a network failure leaves the outcome unknown: the next press reuses the key');
@@ -107,7 +107,7 @@ test('a resubmitted /join reuses the key after a success, a network failure or a
 });
 
 test('/join writes back only its own key, so a key another press stored meanwhile survives', async () => {
-  const store = fileLikeState();
+  const store = fileLikeState(sandboxState());
   const api = (async () => {
     // Another tab's press lands while the onboarding call is in flight.
     store.update(s => { s.idempotency['draft:e9'] = 'another-press'; });
@@ -125,7 +125,7 @@ test('a changed /join form is a new attempt: the key follows the exact body, so 
     keys.push(opts?.idempotencyKey ?? '');
     return { session_id: 's1', url: 'https://new.abillio.dev/s/tok', status: 'awaiting_freelancer', purpose: 'onboarding' };
   }) as Api;
-  const { app } = appWith(api, fileLikeState());
+  const { app } = appWith(api, fileLikeState(sandboxState()));
   const join = (locale: string) => app.request('/join', { method: 'POST', body: new URLSearchParams({ first_name: 'Anna', last_name: 'Ozola', email: 'anna@example.com', tax_country: 'LV', locale }), headers: { 'content-type': 'application/x-www-form-urlencoded' } });
   await join('lv');
   await join('lv');
@@ -141,8 +141,7 @@ type Call = { method: string; path: string; body: unknown; key: string };
 
 // A freelancer who joined (engagement e1) on account a1: what the issue route needs.
 function joinedState(): State {
-  const s = defaultState();
-  s.account = { id: 'a1', name: 'Acme', slug: 'acme' };
+  const s = sandboxState();
   s.freelancer = { email: 'anna@example.com', session_id: 's1', session_url: 'https://new.abillio.dev/s/t', engagement_id: 'e1', servicing_company_slug: 'abillio-ks' };
   return s;
 }
@@ -381,8 +380,7 @@ test('the pay routes fund, pay and settle, storing the payout', async () => {
     if (path === '/accounts/invoices/inv-1/') return { id: 'inv-1', invoice_number: 'A-1', status: 'paid', public_url: 'u' };
     throw new Error(`${method} ${path}`);
   }) as Api;
-  const initial = defaultState();
-  initial.account = { id: 'a1', name: 'Acme', slug: 'acme' };
+  const initial = sandboxState();
   // Served by the Estonian company, not the default one: the deposit has to land on the freelancer's.
   initial.freelancer = { email: 'anna@example.com', session_id: 's1', session_url: 'https://new.abillio.dev/s/t', engagement_id: 'e1', servicing_company_slug: 'abillio-services-ou' };
   initial.invoice = { id: 'inv-1', number: 'A-1', status: 'approved', public_url: 'u' };
@@ -502,7 +500,7 @@ test('the webhook receiver stores a correctly signed delivery once, refuses a ba
 
 test('without a PUBLIC_URL there is no connect button, a connect press explains why and calls nothing, and the receiver answers 503', async () => {
   let calls = 0;
-  const { app } = appWith((async () => { calls++; return {}; }) as Api);
+  const { app } = appWith((async () => { calls++; return {}; }) as Api, memoryState(sandboxState()));
   const html = await (await app.request('/')).text();
   assert.ok(html.includes('PUBLIC_URL') && !html.includes('Connect webhooks'));
   assert.ok((await (await app.request('/steps/events/connect', { method: 'POST' })).text()).includes('Set PUBLIC_URL (npm run tunnel prints how) and restart to receive webhooks.'));
@@ -581,7 +579,7 @@ test('a refused subscription keeps the channel stored: the next press creates on
   const fake = fakeNotificationsApi(call => {
     if (call.path === '/accounts/notifications/subscriptions/' && refuse) { refuse = false; throw new AbillioError(403, { error: { code: 'forbidden', message: 'Not granted' } }, ''); }
   });
-  const { app, state } = appWith(fake.api, fileLikeState(), A);
+  const { app, state } = appWith(fake.api, fileLikeState(sandboxState()), A);
   await pressConnect(app);
   const channel = JSON.parse(fake.channels()[0].body);
   assert.deepEqual(state.load().webhook, { channel_id: 'ch1', subscription_id: null, secret: channel.secret, url: `${A}/webhooks/abillio` }, 'the channel is stored as soon as Abillio answers');
@@ -598,7 +596,7 @@ test('a lost channel answer: the next press re-sends the stored request byte for
   const fake = fakeNotificationsApi(call => {
     if (call.path === '/accounts/notifications/channels/' && lose) { lose = false; throw new TypeError('fetch failed'); }
   });
-  const store = fileLikeState();
+  const store = fileLikeState(sandboxState());
   await pressConnect(appWith(fake.api, store, A).app);
   assert.equal(store.load().webhook, null);
   // The tunnel restarted meanwhile, on another URL.
@@ -615,7 +613,7 @@ test('a channel refused in its envelope: the next press is a new attempt, with a
   const fake = fakeNotificationsApi(call => {
     if (call.path === '/accounts/notifications/channels/' && refuse) { refuse = false; throw new AbillioError(422, { error: { code: 'validation_error', message: 'Enter a valid URL.' } }, ''); }
   });
-  const { app, state } = appWith(fake.api, fileLikeState(), A);
+  const { app, state } = appWith(fake.api, fileLikeState(sandboxState()), A);
   await pressConnect(app);
   assert.equal(state.load().webhook_request, null, 'the refused request goes with its key');
   await pressConnect(app);
@@ -627,7 +625,7 @@ test('a channel refused in its envelope: the next press is a new attempt, with a
 
 test('each move is a PATCH under a fresh key, so going back and forth moves the channel every time', async () => {
   const fake = fakeNotificationsApi();
-  const connected = defaultState();
+  const connected = sandboxState();
   connected.webhook = { channel_id: 'ch1', subscription_id: 'sub1', secret: 'a'.repeat(64), url: `${A}/webhooks/abillio` };
   const store = fileLikeState(connected);
   for (const url of [B, A, B]) await pressConnect(appWith(fake.api, store, url).app);
@@ -739,8 +737,7 @@ test('one poll tick at a time: a tick that finds the last one still waiting on A
 // --- Start over ---------------------------------------------------------------
 
 test('POST /reset resets the sandbox and the state but keeps the webhook channel, with its pending request and keys', async () => {
-  const initial = defaultState();
-  initial.account = { id: 'a1', name: 'Acme', slug: 'acme' };
+  const initial = sandboxState();
   initial.invoice = { id: 'inv-1', number: 'A-1', status: 'paid', public_url: 'u' };
   // A connect that stopped mid-way: the channel exists on Abillio, the
   // subscription's outcome is unknown, so its request and key wait for a replay.
@@ -772,4 +769,49 @@ test('POST /reset resets the sandbox and the state but keeps the webhook channel
   assert.deepEqual(after.webhook, initial.webhook, 'the channel still exists on Abillio');
   assert.deepEqual(after.webhook_request, initial.webhook_request);
   assert.deepEqual(after.idempotency, { 'webhook:channel': 'k-channel', 'webhook:subscription': 'k-subscription' }, "the webhook's keys stay with its request, so the next Connect replays instead of subscribing twice");
+});
+
+// --- Sandbox only ---------------------------------------------------------------
+
+// Every route that writes to Abillio, with a form that gets it past its own checks.
+const WRITE_ROUTES: [string, Record<string, string>][] = [
+  ['/join', { first_name: 'Anna', last_name: 'Ozola', email: 'anna@example.com', tax_country: 'LV', locale: 'lv' }],
+  ['/steps/issue', { description: 'Tutoring, October', unit_price: '100.00', currency_code: 'EUR' }],
+  ['/steps/pay/fund', { amount: '250.00' }],
+  ['/steps/pay/pay', {}],
+  ['/steps/pay/simulate', { outcome: 'paid' }],
+  ['/steps/events/connect', {}],
+  ['/steps/events/test', {}],
+  ['/reset', {}],
+];
+
+test('every route that writes to Abillio runs only on a sandbox account, unless ALLOW_PRODUCTION is set', async () => {
+  // A walk far enough along that every route has something to send: a joined
+  // freelancer, an issued invoice, its payout, a webhook that points elsewhere.
+  const walk = (account: State['account']) => {
+    const s = issuedState('pending', { id: 'p1', status: 'pending' });
+    s.account = account;
+    s.webhook = { channel_id: 'ch1', subscription_id: 'sub1', secret: 'a'.repeat(64), url: 'https://old.example/webhooks/abillio' };
+    return s;
+  };
+  const production = { id: 'a1', name: 'Acme', slug: 'acme', is_sandbox: false };
+  const cases: { account: State['account']; allowProduction: boolean; refusal: string | null }[] = [
+    { account: production, allowProduction: false, refusal: 'This back office runs against sandbox accounts only (the key belongs to a production account).' },
+    { account: null, allowProduction: false, refusal: 'Check the key first (step 1): this back office runs against sandbox accounts only.' },
+    { account: production, allowProduction: true, refusal: null },
+  ];
+  for (const { account, allowProduction, refusal } of cases) {
+    for (const [path, form] of WRITE_ROUTES) {
+      const calls: string[] = [];
+      const api = (async (method: string, p: string) => { calls.push(`${method} ${p}`); throw new Error('stop at the first call'); }) as Api;
+      const { app } = appWith(api, fileLikeState(walk(account)), 'https://x', () => {}, Date.now, null, allowProduction);
+      const text = await (await app.request(path, { method: 'POST', body: new URLSearchParams(form), headers: { 'content-type': 'application/x-www-form-urlencoded' } })).text();
+      if (refusal) {
+        assert.ok(text.includes(refusal), `${path} refuses: ${refusal}`);
+        assert.deepEqual(calls, [], `${path} sends nothing to Abillio`);
+      } else {
+        assert.ok(calls.length > 0, `${path} goes on to Abillio with ALLOW_PRODUCTION`);
+      }
+    }
+  }
 });

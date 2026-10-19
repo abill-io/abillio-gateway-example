@@ -8,6 +8,8 @@ export type Env = {
   account: string;
   publicUrl: string | null;
   port: number;
+  // ALLOW_PRODUCTION=1: the step buttons may write to a production account.
+  allowProduction: boolean;
 };
 
 const DEFAULT_API_URL = 'https://backend.abillio.dev/company-api/v1';
@@ -35,5 +37,6 @@ export function loadEnv(source: NodeJS.ProcessEnv = process.env): Env {
     account: (source.ABILLIO_ACCOUNT ?? '').trim(),
     publicUrl: publicUrl ? trimSlash(publicUrl) : null,
     port,
+    allowProduction: (source.ALLOW_PRODUCTION ?? '').trim() === '1',
   };
 }
