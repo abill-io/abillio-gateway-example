@@ -148,9 +148,11 @@ export async function pollForEvents(api: Api, state: State, now: () => number = 
 // What a poll found, written onto the state as it is now, which may have
 // moved on while the reads were out (an issue, a payment, a simulation, a
 // start over). A row takes only its new status, and only while it is still
-// the row the poll compared, at the status it compared from: the pay route's
-// guard. The rest of a row (the number an issue stored) is the routes' to
-// write. Events are appended once each. Answers whether anything was written.
+// the row the poll compared, at the status it compared from: the issue
+// route's guard on its draft, the same pattern. The rest of a row (the number
+// an issue stored) is the routes' to write. Events are appended once each by
+// their dedupe key; an event without one is never a copy, so it is always
+// appended. Answers whether anything was written.
 export function recordPoll(s: State, found: PollResult): boolean {
   let wrote = false;
   for (const change of found.changes) {
@@ -160,9 +162,10 @@ export function recordPoll(s: State, found: PollResult): boolean {
     wrote = true;
   }
   for (const e of found.events) {
-    if (s.events.some(x => x.dedupe_key === e.dedupe_key)) continue;
-    s.events.push(e);
-    wrote = true;
+    if (!e.dedupe_key || !s.events.some(x => x.dedupe_key === e.dedupe_key)) {
+      s.events.push(e);
+      wrote = true;
+    }
   }
   return wrote;
 }

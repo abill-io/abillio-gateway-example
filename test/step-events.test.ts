@@ -138,3 +138,13 @@ test("a payout change is named as the webhook names it, a return included; one n
     assert.equal(found.events.at(-1)?.event_type, name, `${from} → ${to}`);
   }
 });
+
+test('recordPoll appends an event that carries no dedupe key, even when a stored one has none either', () => {
+  // A key-less event is never a copy of another: two of them must not
+  // compare equal on their missing keys.
+  const keyless = (event_type: string): StoredEvent => ({ received_at: '2026-10-19T12:00:00.000Z', event_type, data: {}, via: 'poll' });
+  const state = defaultState();
+  state.events.push(keyless('engagement.invoice.paid'));
+  assert.equal(recordPoll(state, { events: [keyless('engagement.payout.completed')], changes: [] }), true);
+  assert.deepEqual(state.events.map(e => e.event_type), ['engagement.invoice.paid', 'engagement.payout.completed']);
+});
