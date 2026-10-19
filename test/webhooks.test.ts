@@ -27,10 +27,11 @@ test('rejects a stale or missing timestamp with 400 and a bad signature with 401
   assert.deepEqual(bad, { ok: false, status: 401, reason: 'signature mismatch' });
 });
 
-test('dedupe key changes with the body and the timestamp, and parseDelivery reads event_type and data', () => {
-  const a = dedupeKey('engagement.invoice.paid', v.timestamp, body);
-  assert.notEqual(a, dedupeKey('engagement.invoice.paid', '1', body));
-  assert.notEqual(a, dedupeKey('engagement.invoice.paid', v.timestamp, Buffer.from('{}')));
+test('dedupe key is the event and the body — the same across retries, different per body — and parseDelivery reads event_type and data', () => {
+  const a = dedupeKey('engagement.invoice.paid', body);
+  assert.equal(a, dedupeKey('engagement.invoice.paid', body));
+  assert.notEqual(a, dedupeKey('engagement.invoice.confirmed', body));
+  assert.notEqual(a, dedupeKey('engagement.invoice.paid', Buffer.from('{}')));
   assert.deepEqual(parseDelivery(body), { event_type: 'engagement.invoice.paid', data: { invoice_uuid: 'inv-1', amount: '100.00' } });
   assert.equal(parseDelivery(Buffer.from('nope')), null);
 });

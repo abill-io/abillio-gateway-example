@@ -28,10 +28,12 @@ export function verifySignature(
   return { ok: true, timestamp };
 }
 
-// Retries are signed afresh, so the signature cannot be the dedupe key; the
-// event and the body are.
-export function dedupeKey(eventType: string, timestamp: string, rawBody: Buffer): string {
-  return `${eventType}:${timestamp}:${createHash('sha256').update(rawBody).digest('hex')}`;
+// Retries are signed afresh with a NEW timestamp but carry the same body, so
+// the body is the key — not the signature, not the timestamp. The sender adds
+// no delivery id: two deliveries with byte-identical bodies are the same
+// delivery by design and are stored once.
+export function dedupeKey(eventType: string, rawBody: Buffer): string {
+  return `${eventType}:${createHash('sha256').update(rawBody).digest('hex')}`;
 }
 
 export function parseDelivery(rawBody: Buffer): { event_type: string; data: Record<string, unknown> } | null {
