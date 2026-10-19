@@ -14,6 +14,8 @@ export const NEEDED_ACTIONS = [
   'invoices.issue',                      // POST …/invoices/{id}/issue (step 3)
   'invoices.review.approve',             // the same call approves a self-client invoice (step 3)
   'wallet.payment.execute',              // POST /accounts/wallet/pay-invoice/ (step 4)
+  'payouts.view',                        // GET /engagements/{id}/payouts/, the payout lookup and read-back (steps 4, 5)
+  'invoices.view',                       // GET /accounts/invoices/{id}/, the invoice read-back (steps 4, 5)
   'sandbox.simulate',                    // simulate-deposit, payout outcomes, reset (steps 4, 10)
   'notifications.channels.manage',       // POST /accounts/notifications/channels/ (step 5)
   'notifications.subscriptions.manage',  // POST /accounts/notifications/subscriptions/ (step 5)
