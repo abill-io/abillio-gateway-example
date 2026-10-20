@@ -78,17 +78,21 @@ export function createApp(deps: Deps): Hono {
   const boundAccount = (s: State): State['account'] =>
     s.account && s.account.key_id === deps.keyId && s.account.env_account === deps.account ? s.account : null;
   // What a page or /api/state may show of the state: everything except the
-  // webhook signing secret, connected or still pending, and the API key id
-  // the key check was made with. On the hosted copy every visitor sees this
-  // page; the secret is what lets someone forge a delivery, and the key id is
-  // the credential's name, kept out of sight like the rest of .env. The
-  // account is the bound one, so the page gates its buttons as the guard does.
+  // webhook signing secret, connected or still pending, the API key id the
+  // key check was made with, and the freelancer's onboarding link. On the
+  // hosted copy every visitor sees this page; the secret is what lets
+  // someone forge a delivery, the key id is the credential's name, kept out
+  // of sight like the rest of .env, and the link is the freelancer's to open
+  // (guide §9), spent on its first open, so whoever took it from here first
+  // would spend it. The account is the bound one, so the page gates its
+  // buttons as the guard does.
   const mask = (secret: string) => '…' + secret.slice(-4);
   const publicState = (s: State): State => {
     const account = boundAccount(s);
     return {
       ...s,
       account: account && { ...account, key_id: mask(account.key_id) },
+      freelancer: s.freelancer && { ...s.freelancer, session_url: mask(s.freelancer.session_url) },
       webhook: s.webhook && { ...s.webhook, secret: mask(s.webhook.secret) },
       webhook_request: s.webhook_request && { ...s.webhook_request, secret: mask(s.webhook_request.secret) },
     };

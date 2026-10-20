@@ -64,7 +64,7 @@ export function tracePanel(entries: TraceEntry[]): string {
       <h3>Response</h3>${jsonBlock(e.responseBody)}
       ${e.error ? `<p class="error">${esc(e.error)}</p>` : ''}
     </details>`).join('');
-  return `<section id="trace" class="console-section" aria-labelledby="trace-title"><h2 id="trace-title">What we sent to Abillio</h2><p class="muted">Newest first. Headers are not shown. Secrets read <code>[redacted]</code> everywhere, and in Abillio's answers so do the keys named for personal data: e-mail addresses, first, last and legal names, contact persons, phone numbers, addresses, bank accounts, personal codes, registration and VAT numbers. Display names and free text (notes, descriptions, invite messages) stay readable, and what you type on the join page shows as typed in the request. Everything else is exactly the wire.</p>${rows || '<p class="empty">Nothing yet — press a button.</p>'}</section>`;
+  return `<section id="trace" class="console-section" aria-labelledby="trace-title"><h2 id="trace-title">What we sent to Abillio</h2><p class="muted">Newest first. Headers are not shown. Secrets read <code>[redacted]</code> everywhere, and in Abillio's answers so do the onboarding link (the freelancer's to open) and the keys named for personal data: e-mail addresses, first, last and legal names, contact persons, phone numbers, addresses, bank accounts, personal codes, registration and VAT numbers. Display names and free text (notes, descriptions, invite messages) stay readable, and what you type on the join page shows as typed in the request. Everything else is exactly the wire.</p>${rows || '<p class="empty">Nothing yet — press a button.</p>'}</section>`;
 }
 
 // The answer's class, so the status reads as a colour too: 2xx went through,

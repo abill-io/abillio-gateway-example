@@ -83,8 +83,9 @@ details in the popup; the join page says the same.
 Two files hold secrets, and neither belongs in a repository. `.env` holds
 `ABILLIO_PRIVATE_KEY`, the seed that signs as your company. `data/state.json`
 holds the webhook signing secret in clear, and whoever has it can forge a
-delivery your receiver will believe; it also holds the full API key id, which
-the page cuts down to its last four characters. Both are in `.gitignore`, but
+delivery your receiver will believe; it also holds the full API key id and the
+freelancer's onboarding link, which the page cuts down to their last four
+characters. Both are in `.gitignore`, but
 only at their default paths: a `STATE_FILE` somewhere else is not ignored, so
 keep it out of the repository yourself.
 
@@ -130,17 +131,22 @@ Abillio, the keys named for an e-mail address (`email`, `accounting_email`,
 person, a phone number, an address, a bank account, a personal code or a
 registration or VAT number, as `lib/abillio.ts` lists them
 (`GET /accounts/clients/` returns a row for the account owner's own company,
-with the owner's e-mail and address on it); in a request, only the keys no form
+with the owner's e-mail and address on it), and the onboarding link the mint
+answers with (`url`), which is the freelancer's to open and is spent on its
+first open; in a request, only the keys no form
 of the sample types, so the e-mail and names typed on the join page show as
 typed. Display names (`name`, `display_name`) are not masked: they are the
 company's own name and the name typed on the join page. Nor is free text:
 `internal_notes`, `notes`, `invite_message` and `description` stay readable
 whatever they say, so keep personal data out of them. The
-**What we store** panel shows `data/state.json`, with the webhook signing secret
-and the API key id cut down to their last four characters; `GET /api/state` and `GET /api/trace`
-serve the same two things as JSON. On the hosted copy everyone shares one walk:
-the state, the trace and the made-up `@example.com` addresses in them are the
-same for every visitor, and **Start over** starts the walk over for everybody.
+**What we store** panel shows `data/state.json`, with the webhook signing
+secret, the API key id and the freelancer's onboarding link (`session_url`) cut
+down to their last four characters; `GET /api/state` and `GET /api/trace` serve
+the same two things as JSON. The link reaches only the browser that pressed
+**Continue with Abillio**, in the `/join` answer. On the hosted copy everyone
+shares one walk: the state, the trace and the made-up `@example.com` addresses
+in them are the same for every visitor, and **Start over** starts the walk over
+for everybody.
 
 ### Idempotency, the one rule every step follows
 

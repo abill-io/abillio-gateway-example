@@ -93,7 +93,7 @@ test('POST /steps/key stores the account and shows the actions table; an error r
   assert.deepEqual(state.load().account, { id: 'a1', name: 'Acme', slug: 'acme', is_sandbox: true, key_id: TEST_ENV.keyId, env_account: '' }, 'with whether it is a sandbox, which every write route asks, and the key and ABILLIO_ACCOUNT the answer is for');
 });
 
-test('GET /api/state returns the stored state as JSON, without the webhook secret or the API key id', async () => {
+test("GET /api/state returns the stored state as JSON, without the webhook secret, the API key id or the freelancer's onboarding link", async () => {
   const { app } = appWith((async () => ({})) as Api);
   const res = await app.request('/api/state');
   assert.equal(res.headers.get('content-type')?.includes('application/json'), true);
@@ -104,14 +104,20 @@ test('GET /api/state returns the stored state as JSON, without the webhook secre
   // The key check stores the key id it was made with (the running one, or the
   // page would show no account at all); .env treats it as a secret.
   withSecret.account = sandboxState().account;
+  // The link is the freelancer's bearer credential, spent on its first open (guide §9).
+  const token = 't'.repeat(40) + 'wxyz';
+  withSecret.freelancer = { email: 'anna@example.com', session_id: 's1', session_url: `https://new.abillio.dev/s/${token}`, engagement_id: null, servicing_company_slug: null };
   const { app: app2 } = appWith((async () => ({})) as Api, memoryState(withSecret));
   const body = await (await app2.request('/api/state')).text();
   assert.ok(!body.includes('a'.repeat(60)), 'the secret never leaves the server');
   assert.ok(!body.includes('c'.repeat(60)), "nor does a pending channel request's");
   assert.ok(!body.includes(TEST_ENV.keyId.slice(0, -4)), 'nor does the API key id');
-  assert.ok(body.includes('beef') && body.includes('f00d') && body.includes(TEST_ENV.keyId.slice(-4)), 'their last four characters identify them');
-  const html = await (await app2.request('/')).text();
-  assert.ok(!html.includes('a'.repeat(60)) && !html.includes('c'.repeat(60)) && !html.includes(TEST_ENV.keyId.slice(0, -4)));
+  assert.ok(!body.includes(token.slice(0, -4)), "nor does the freelancer's onboarding link");
+  assert.ok(body.includes('beef') && body.includes('f00d') && body.includes(TEST_ENV.keyId.slice(-4)) && body.includes('wxyz'), 'their last four characters identify them');
+  for (const path of ['/', '/join']) {
+    const html = await (await app2.request(path)).text();
+    assert.ok(!html.includes('a'.repeat(60)) && !html.includes('c'.repeat(60)) && !html.includes(TEST_ENV.keyId.slice(0, -4)) && !html.includes(token.slice(0, -4)), path);
+  }
 });
 
 test('the join page opens the popup from the session url and polls the status', async () => {

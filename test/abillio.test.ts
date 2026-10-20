@@ -115,7 +115,7 @@ test('the trace redacts keys named like secrets in both bodies; the wire and the
   assert.equal(out.user_email, 'a@b.c', 'the caller gets the real answer');
 });
 
-test("the trace keeps the join form as typed and masks the account owner's personal data in the client rows Abillio answers with", async () => {
+test("the trace keeps the join form as typed, masks the link the mint answers with, and masks the account owner's personal data in the client rows Abillio answers with", async () => {
   const trace = new Trace();
   const ownerRow = {
     id: 'c1', name: 'Acme SIA', kind: 'company', company_account_id: 'a1',
@@ -124,14 +124,16 @@ test("the trace keeps the join form as typed and masks the account owner's perso
     registration_number: '40003000001', vat_number: 'LV40003000001',
   };
   const api = createApi(env, {
-    fetchImpl: fakeFetch(url => new Response(JSON.stringify(url.includes('/accounts/clients/') ? { count: 1, items: [ownerRow] } : { session_id: 's1' }), { status: 200 })),
+    fetchImpl: fakeFetch(url => new Response(JSON.stringify(url.includes('/accounts/clients/') ? { count: 1, items: [ownerRow] } : { session_id: 's1', url: 'https://new.abillio.dev/s/tok' }), { status: 200 })),
     trace,
   });
   const join = { email: 'anna@example.com', locale: 'lv', return_url: 'http://localhost:4000/back', prefill: { first_name: 'Anna', last_name: 'Ozola', tax_country: 'LV' } };
-  await api('POST', '/onboarding/sessions/', join, { idempotencyKey: 'idem-6' });
+  const minted = await api<{ url: string }>('POST', '/onboarding/sessions/', join, { idempotencyKey: 'idem-6' });
   await api('GET', '/accounts/clients/?limit=100');
   const [onboarding, clients] = trace.list();
   assert.deepEqual(onboarding.requestBody, join);
+  assert.deepEqual(onboarding.responseBody, { session_id: 's1', url: '[redacted]' }, "the link is the freelancer's to open, not every visitor's");
+  assert.equal(minted.url, 'https://new.abillio.dev/s/tok', 'the caller still gets it');
   assert.deepEqual(clients.responseBody, {
     count: 1,
     items: [{
