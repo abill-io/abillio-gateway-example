@@ -52,8 +52,13 @@ export function createApp(deps: Deps): Hono {
   // refuses a form POST that carries no Origin at all, which is every client
   // that is not a browser (curl, a script, the tests), so it only judges what
   // a browser sent: browsers put Origin, and Sec-Fetch-Site, on every POST, so
-  // no foreign page can make one send neither.
-  const crossSite = csrf();
+  // no foreign page can make one send neither. This server's origin is two:
+  // behind a TLS edge the request URL reads http (the Node adapter takes the
+  // scheme from the socket, not X-Forwarded-Proto), while the browser's Origin
+  // is the https address it opened, PUBLIC_URL's. A browser that sends no
+  // Sec-Fetch-Site (Safari before 16.4) is judged on Origin alone.
+  const publicOrigin = originOf(deps.publicUrl);
+  const crossSite = csrf({ origin: (origin, c) => origin === new URL(c.req.url).origin || origin === publicOrigin });
   app.use(async (c, next) => (c.req.header('origin') === undefined && c.req.header('sec-fetch-site') === undefined ? next() : crossSite(c, next)));
   let lastKey: KeyReport | null = null;
   const refreshListeners = new Set<() => void>();
@@ -495,6 +500,15 @@ export function createApp(deps: Deps): Hono {
   });
 
   return app;
+}
+
+function originOf(url: string | null): string | null {
+  if (!url) return null;
+  try {
+    return new URL(url).origin;
+  } catch {
+    return null;
+  }
 }
 
 export function main(): void {

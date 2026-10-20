@@ -628,6 +628,16 @@ test('a form POST from another origin is refused; one from this origin is not, n
   assert.equal(delivery.status, 503, 'a JSON body is not a form: the guard leaves it to the receiver, which judges it by its signature');
 });
 
+test("behind the TLS edge the request URL reads http, so a form POST whose Origin is PUBLIC_URL's passes without Sec-Fetch-Site; a foreign Origin still does not", async () => {
+  const { app } = appWith((async () => ({})) as Api, memoryState(), 'https://demo.abillio.dev');
+  // An older Safari (before 16.4) sends Origin but no Sec-Fetch-Site.
+  const post = (origin: string) => app.request('http://demo.abillio.dev/steps/key', { method: 'POST', headers: { origin, 'content-type': 'application/x-www-form-urlencoded' }, body: '' });
+  assert.notEqual((await post('https://demo.abillio.dev')).status, 403, 'the page the visitor opened, at PUBLIC_URL');
+  assert.notEqual((await post('http://demo.abillio.dev')).status, 403, 'the request URL itself, as before');
+  assert.equal((await post('https://evil.example')).status, 403);
+  assert.equal((await post('https://demo.abillio.dev.evil.example')).status, 403, 'an origin is compared whole');
+});
+
 test('what a delivery says is escaped on the page: neither its event type nor its payload can add markup', async () => {
   const initial = defaultState();
   initial.events = [{ received_at: '2026-10-19T10:00:00.000Z', event_type: '<script>alert(1)</script>', data: { note: '<img src=x onerror=alert(2)>' }, via: 'webhook', dedupe_key: 'k' }];
