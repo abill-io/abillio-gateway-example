@@ -10,6 +10,13 @@
   let abillioOrigin = form.dataset.origin || null;
   let popup = null;
   let timer = null;
+  // The note says two things at once: what the popup or the page last said
+  // (a blocked popup's link, Abillio's message), and why the last status
+  // check failed, until one succeeds. A failed check must not wipe the link
+  // a blocked popup left to open by hand.
+  let said = '';
+  let failure = '';
+  const sayNote = () => { note.textContent = [said, failure].filter(Boolean).join(' '); };
 
   // The status is Abillio's answer relayed by our server. It is still escaped
   // before it becomes HTML, as every value on the server-rendered pages is.
@@ -22,15 +29,28 @@
     if (s.can_be_paid || s.state === 'complete' || s.state === 'expired') clearInterval(timer);
   };
 
+  // A status answer that is not OK (a refused Abillio read, the server
+  // unreachable) is said in the note, and the next tick asks again.
   const poll = async () => {
-    const res = await fetch('/join/status');
-    if (res.ok) render(await res.json());
+    try {
+      const res = await fetch('/join/status');
+      if (res.ok) {
+        failure = '';
+        render(await res.json());
+      } else {
+        failure = `The status check failed: ${await res.text()}`;
+      }
+    } catch (err) {
+      failure = `The status check failed: ${err.message}`;
+    }
+    sayNote();
   };
 
   window.addEventListener('message', event => {
     if (!abillioOrigin || event.origin !== abillioOrigin) return;
     if (!event.data || event.data.source !== 'abillio') return;
-    note.textContent = `Abillio says: state ${event.data.state}, can_be_paid ${event.data.can_be_paid} (session ${event.data.session_id}).`;
+    said = `Abillio says: state ${event.data.state}, can_be_paid ${event.data.can_be_paid} (session ${event.data.session_id}).`;
+    sayNote();
     poll();
   });
 
@@ -41,7 +61,8 @@
     popup = window.open('about:blank', 'abillio', 'popup,width=520,height=760');
     const res = await fetch('/join', { method: 'POST', body: new URLSearchParams(new FormData(form)) });
     if (!res.ok) {
-      note.textContent = `Could not start: ${await res.text()}`;
+      said = `Could not start: ${await res.text()}`;
+      sayNote();
       popup && popup.close();
       // app.js disabled the button a tick after the submit. Nothing navigates
       // away on an error, so give it back for a corrected resubmit.
@@ -50,7 +71,9 @@
     }
     const session = await res.json();
     abillioOrigin = session.origin;
-    if (popup) popup.location = session.url; else note.textContent = `Popup blocked — open ${session.url} yourself.`;
+    said = popup ? '' : `Popup blocked — open ${session.url} yourself.`;
+    sayNote();
+    if (popup) popup.location = session.url;
     clearInterval(timer);
     timer = setInterval(poll, 3000);
     poll();

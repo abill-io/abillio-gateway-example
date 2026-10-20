@@ -150,6 +150,12 @@ export function createApp(deps: Deps): Hono {
       ? 'This back office runs against sandbox accounts only (the key belongs to a production account).'
       : 'Check the key first (step 1): this back office runs against sandbox accounts only.';
   };
+  // What the join page's note says of a failed /join or /join/status: the
+  // envelope's code and message, and the hint (a 403 names the key's
+  // permissions), since the join page has no error box.
+  const joinErrorText = (err: unknown): string =>
+    err instanceof AbillioError ? [`${err.code}: ${err.message}`, err.hint].filter(Boolean).join(' — ') : String(err);
+
   // /join answers the join page's fetch in plain text; the others render the back office.
   app.post('/join', async (c, next) => {
     const refusal = sandboxRefusal();
@@ -209,7 +215,7 @@ export function createApp(deps: Deps): Hono {
       });
       return c.json(session);
     } catch (err) {
-      return c.text(err instanceof AbillioError ? `${err.code}: ${err.message}` : String(err), 502);
+      return c.text(joinErrorText(err), 502);
     }
   });
 
@@ -238,7 +244,7 @@ export function createApp(deps: Deps): Hono {
       }
       return c.json({ ...status, engagement_id: engagementId });
     } catch (err) {
-      return c.text(err instanceof AbillioError ? `${err.code}: ${err.message}` : String(err), 502);
+      return c.text(joinErrorText(err), 502);
     }
   });
 

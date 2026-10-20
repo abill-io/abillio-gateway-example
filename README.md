@@ -240,7 +240,7 @@ and three of the entries `GET /me/authorization/` returned:
 }
 ```
 
-The page lists the twelve actions the steps use (`NEEDED_ACTIONS` in
+The page lists the thirteen actions the steps use (`NEEDED_ACTIONS` in
 `steps/01-key.ts`) first and folds the rest away. `context_required` is a yes:
 the call itself carries what the action needs, such as the invoice to pay.
 The step writes `account: { id, name, slug, is_sandbox, key_id, env_account }`
@@ -338,7 +338,10 @@ Meanwhile the page asks the server every three seconds, and the server asks
 The session carries no engagement id, so once it has left `awaiting_freelancer`
 the server looks the engagement up by the address the link was minted for,
 `GET /engagements/?search=<e-mail>`, and keeps the row whose
-`counterparty.email` matches. Abridged, at the moment of the first lookup:
+`counterparty.email` matches. Reading the session is the key's
+`freelancers.view`; the lookup is `engagements.view`, a grant of its own, and
+without it the page's note says the status check failed. Abridged, at the
+moment of the first lookup:
 
 ```json
 {
