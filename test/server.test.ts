@@ -675,6 +675,39 @@ test("an event about another walk (a reset's demo freelancers) is stored but not
   assert.equal(html.match(/>not this walk</g)?.length, 2, 'the log tags the demo event and the test delivery: neither is about this walk');
 });
 
+// A receiver for a walk holding inv-1, and deliveries signed with the vector's secret.
+function signedReceiver(events: State['events'] = []) {
+  const v = JSON.parse(readFileSync(new URL('./vectors.json', import.meta.url), 'utf8')).webhook;
+  const initial = issuedState();
+  initial.webhook = { channel_id: 'ch1', subscription_id: 'sub1', secret: v.secret, url: 'https://x/webhooks/abillio' };
+  initial.events = events;
+  const told: string[] = [];
+  const { app, state, trace } = appWith((async () => ({})) as Api, fileLikeState(initial), 'https://x', () => told.push('refresh'), () => Number(v.timestamp) * 1000 + 1000);
+  const deliver = (raw: string) => {
+    const v1 = createHmac('sha256', v.secret).update(`${v.timestamp}.`).update(raw).digest('hex');
+    return app.request('/webhooks/abillio', { method: 'POST', body: raw, headers: { 'content-type': 'application/json', 'x-timestamp': v.timestamp, 'x-signature': `t=${v.timestamp},v1=${v1}` } });
+  };
+  return { deliver, state, trace, told };
+}
+
+test('a correctly signed body that is not a delivery is answered 200 and dropped, with a line in the trace: a 4xx would count as a failed delivery', async () => {
+  const { deliver, state, trace, told } = signedReceiver();
+  for (const raw of ['[]', '{"hello":"world"}', '"text"']) assert.equal((await deliver(raw)).status, 200, raw);
+  assert.deepEqual(state.load().events, [], 'nothing is stored');
+  assert.deepEqual(told, []);
+  assert.deepEqual(trace.list().map(e => [e.method, e.path, e.status, e.error?.startsWith('dropped:')]), Array(3).fill(['WEBHOOK', '/webhooks/abillio', 200, true]));
+});
+
+test('the receiver keeps the newest 200 events: pressing Send a test delivery in a loop cannot grow the state without bound', async () => {
+  const old = Array.from({ length: 200 }, (_, n) => ({ received_at: '2026-10-19T10:00:00.000Z', event_type: 'channel.test', data: { n }, via: 'webhook' as const, dedupe_key: `k${n}` }));
+  const { deliver, state } = signedReceiver(old);
+  assert.equal((await deliver('{"event_type":"channel.test","message":"This is a test notification from Abillio.","channel_name":"gateway-example"}')).status, 200);
+  const events = state.load().events;
+  assert.equal(events.length, 200);
+  assert.deepEqual(events[0].data, { n: 1 }, 'the oldest one went');
+  assert.equal(events.at(-1)?.data.channel_name, 'gateway-example', 'the newest one is the delivery');
+});
+
 test('two copies of a delivery that arrive together are stored once, and the page is told once', async () => {
   const v = JSON.parse(readFileSync(new URL('./vectors.json', import.meta.url), 'utf8')).webhook;
   const initial = issuedState();

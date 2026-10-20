@@ -94,6 +94,16 @@ export function idempotencyKeyFor(state: State, action: string): string {
   return minted;
 }
 
+// The event log keeps the newest EVENT_LIMIT events. On the hosted copy anyone
+// can make Abillio send a test delivery, every write rewrites the whole file
+// and the page renders the log, so it must not grow without bound. Both
+// writers, the webhook receiver and the poll, append through here.
+export const EVENT_LIMIT = 200;
+export function appendEvent(state: State, event: StoredEvent): void {
+  state.events.push(event);
+  if (state.events.length > EVENT_LIMIT) state.events.splice(0, state.events.length - EVENT_LIMIT);
+}
+
 // Where a route reads and writes the state: data/state.json in the app, an
 // object in the tests.
 export type Store = { load: () => State; update: (fn: (s: State) => void) => State };

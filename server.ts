@@ -9,7 +9,7 @@ import { csrf } from 'hono/csrf';
 import { streamSSE } from 'hono/streaming';
 import { AbillioError, createApi, type Api } from './lib/abillio.ts';
 import { loadEnv } from './lib/env.ts';
-import { defaultState, forgetIdempotencyKey, loadState, updateState, type KeyedOptions, type State, type Store, type StoredEvent } from './lib/store.ts';
+import { appendEvent, defaultState, forgetIdempotencyKey, loadState, updateState, type KeyedOptions, type State, type Store, type StoredEvent } from './lib/store.ts';
 import { Trace, trace as processTrace } from './lib/trace.ts';
 import { dedupeKey, parseDelivery, verifySignature } from './lib/webhooks.ts';
 import { checkKey, type KeyReport } from './steps/01-key.ts';
@@ -393,12 +393,20 @@ export function createApp(deps: Deps): Hono {
     if (!state.webhook) return c.text('webhooks not connected: set PUBLIC_URL and press Connect', 503);
     const raw = Buffer.from(await c.req.arrayBuffer());
     const verdict = verifySignature(state.webhook.secret, { timestamp: c.req.header('x-timestamp') ?? null, signature: c.req.header('x-signature') ?? null }, raw, deps.now);
+    const traceLine = (status: number, error: string) => deps.trace.push({ at: new Date(deps.now()).toISOString(), method: 'WEBHOOK', path: '/webhooks/abillio', requestBody: null, status, responseBody: null, idempotencyKey: null, replayed: false, error });
     if (!verdict.ok) {
-      deps.trace.push({ at: new Date(deps.now()).toISOString(), method: 'WEBHOOK', path: '/webhooks/abillio', requestBody: null, status: verdict.status, responseBody: null, idempotencyKey: null, replayed: false, error: `refused: ${verdict.reason}` });
+      traceLine(verdict.status, `refused: ${verdict.reason}`);
       return c.text(verdict.reason, verdict.status);
     }
+    // Signed with our secret, but neither an event nor a test delivery: the
+    // guide's rule for what a receiver does not route on is to answer 2xx and
+    // drop it (§10). A 4xx would count as a failed delivery, and ten in a row
+    // disable the channel.
     const delivery = parseDelivery(raw);
-    if (!delivery) return c.text('not a delivery', 400);
+    if (!delivery) {
+      traceLine(200, 'dropped: signed correctly, but neither an event nor a test delivery');
+      return c.text('ok', 200);
+    }
     const key = dedupeKey(delivery.event_type, raw);
     // The test delivery has a constant body and no retries: every press is a
     // new one on purpose, so it is never deduped. Real events carry their
@@ -409,7 +417,7 @@ export function createApp(deps: Deps): Hono {
     let stored = false;
     const after = deps.state.update(s => {
       if (delivery.event_type !== 'channel.test' && s.events.some(e => e.dedupe_key === key)) return;
-      s.events.push(event);
+      appendEvent(s, event);
       stored = true;
     });
     if (stored && announced(after, event)) notifyStored();

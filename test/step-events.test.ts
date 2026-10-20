@@ -139,6 +139,15 @@ test("a payout change is named as the webhook names it, a return included; one n
   }
 });
 
+test('recordPoll keeps the newest 200 events, as the receiver does', () => {
+  const state = defaultState();
+  state.events = Array.from({ length: 200 }, (_, n): StoredEvent => ({ received_at: '2026-10-19T12:00:00.000Z', event_type: 'engagement.invoice.status_changed', data: { n }, via: 'poll', dedupe_key: `k${n}` }));
+  recordPoll(state, { events: [{ received_at: '2026-10-19T12:00:05.000Z', event_type: 'engagement.invoice.paid', data: {}, via: 'poll', dedupe_key: 'paid' }], changes: [] });
+  assert.equal(state.events.length, 200);
+  assert.deepEqual(state.events[0].data, { n: 1 }, 'the oldest one went');
+  assert.equal(state.events.at(-1)?.event_type, 'engagement.invoice.paid');
+});
+
 test('recordPoll appends an event that carries no dedupe key, even when a stored one has none either', () => {
   // A key-less event is never a copy of another: two of them must not
   // compare equal on their missing keys.

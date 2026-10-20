@@ -4,7 +4,7 @@
 // same reads the earlier steps make and reports what changed.
 import { randomBytes, randomUUID } from 'node:crypto';
 import type { Api } from '../lib/abillio.ts';
-import { idempotencyKeyFor, type Keyed, type State, type Store, type StoredEvent } from '../lib/store.ts';
+import { appendEvent, idempotencyKeyFor, type Keyed, type State, type Store, type StoredEvent } from '../lib/store.ts';
 import { readSession } from './02-onboard.ts';
 import { readInvoice, readPayout } from './04-pay.ts';
 
@@ -172,8 +172,9 @@ export async function pollForEvents(api: Api, state: State, now: () => number = 
 // the row the poll compared, at the status it compared from: the issue
 // route's guard on its draft, the same pattern. The rest of a row (the number
 // an issue stored) is the routes' to write. Events are appended once each by
-// their dedupe key; an event without one is never a copy, so it is always
-// appended. Answers what was written, for the caller to say so (or not).
+// their dedupe key (an event without one is never a copy, so it is always
+// appended), and the log keeps the newest EVENT_LIMIT. Answers what was
+// written, for the caller to say so (or not).
 export function recordPoll(s: State, found: PollResult): PollResult {
   const written: PollResult = { events: [], changes: [] };
   for (const change of found.changes) {
@@ -184,7 +185,7 @@ export function recordPoll(s: State, found: PollResult): PollResult {
   }
   for (const e of found.events) {
     if (!e.dedupe_key || !s.events.some(x => x.dedupe_key === e.dedupe_key)) {
-      s.events.push(e);
+      appendEvent(s, e);
       written.events.push(e);
     }
   }

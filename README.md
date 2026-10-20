@@ -704,8 +704,11 @@ timestamp but carries the same body, so deliveries are deduplicated on the event
 and a hash of the body, and stored once; the test delivery is never
 deduplicated, because every press is a new one. The receiver answers 200 at
 once. A delivery that fails a check stores nothing and shows up in the trace
-with the reason. During the walk the sample received, in order: the test
-delivery, `engagement.onboarding.started`, two
+with the reason. A body that passes the checks but is neither an event nor a
+test delivery is answered 200 too and dropped, with a line in the trace: a 4xx
+would count as a failed delivery, and ten in a row disable the channel. The log
+keeps the newest 200 events. During the walk the sample received, in order:
+the test delivery, `engagement.onboarding.started`, two
 `engagement.requirements_updated`, `engagement.onboarding.completed`,
 `engagement.invoice.status_changed`, `engagement.invoice.confirmed`,
 `engagement.invoice.paid`, `engagement.payout.processing` and
