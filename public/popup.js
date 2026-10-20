@@ -22,11 +22,18 @@
   // before it becomes HTML, as every value on the server-rendered pages is.
   const esc = v => String(v ?? '').replace(/[&<>"']/g, ch => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[ch]);
 
+  // Until the freelancer can be paid, one sentence names what Abillio is still
+  // waiting on: a popup closed half way must not read as nothing having
+  // happened. The poll stops once they can be paid or the link is over, and
+  // the sentence goes with it.
   const render = s => {
     const rows = (s.requirements || []).map(r => `<li><code>${esc(r.key)}</code> ${esc(r.state)}</li>`).join('');
+    const over = s.can_be_paid || s.state === 'complete' || s.state === 'expired';
+    const open = (s.requirements || []).filter(r => r.state !== 'done').map(r => `<code>${esc(r.key)}</code> ${esc(r.state)}`).join(', ');
+    const waiting = s.state !== 'none' && !over ? `<p class="muted">Not payable yet${open ? ` — Abillio is still waiting on: ${open}` : ''}. The page keeps asking every 3 s.</p>` : '';
     status.innerHTML = `<p>state <b>${esc(s.state)}</b>, can_be_paid <b>${esc(s.can_be_paid)}</b>${s.engagement_id ? `, engagement <code>${esc(s.engagement_id)}</code>` : ''}</p><ul>${rows}</ul>` +
-      (s.can_be_paid ? '<p class="ok">The freelancer can be paid. Go to the <a href="/">back office</a> and issue the first invoice.</p>' : '');
-    if (s.can_be_paid || s.state === 'complete' || s.state === 'expired') clearInterval(timer);
+      (s.can_be_paid ? '<p class="ok">The freelancer can be paid. Go to the <a href="/">back office</a> and issue the first invoice.</p>' : waiting);
+    if (over) clearInterval(timer);
   };
 
   // A status answer that is not OK (a refused Abillio read, the server
