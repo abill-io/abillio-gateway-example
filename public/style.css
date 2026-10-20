@@ -665,7 +665,8 @@ p.error { margin: 10px 0 0; font-size: var(--text-sm); color: var(--danger); }
   .events summary { grid-template-columns: 7px minmax(0, 1fr) auto; }
   .events summary::before { grid-row: 1 / span 2; align-self: start; margin-top: 7px; }
   .events .when { grid-area: 1 / 2; }
-  .events summary .tags { grid-area: 1 / 3; }
+  /* Two tags stack, so the time beside them keeps its one line. */
+  .events summary .tags { grid-area: 1 / 3; flex-direction: column; align-items: flex-end; }
   .events summary code { grid-area: 2 / 2 / auto / -1; }
 }
 
