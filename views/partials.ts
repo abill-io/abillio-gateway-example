@@ -32,17 +32,35 @@ export function stepStatuses(state: State): StepStatus[] {
 
 const STATUS_LABEL: Record<StepStatus, string> = { done: 'Done', active: 'In progress', current: 'Up next', upcoming: 'Not yet' };
 
+const STEP_TITLES = [
+  'Step 1 — Does the key work?',
+  'Step 2 — The freelancer joins',
+  "Step 3 — Issue an invoice in the freelancer's name",
+  'Step 4 — Pay it from the wallet',
+  'Step 5 — Hear from Abillio',
+];
+
 // A step panel's head: its title, and where it stands in words, so the status
 // does not rest on the rail marker's colour alone.
-export function stepHead(n: number, title: string, status: StepStatus): string {
-  return `<div class="step-head"><h2 id="step-${esc(n)}-title">${esc(title)}</h2><span class="step-status">${esc(STATUS_LABEL[status])}</span></div>`;
+export function stepHead(n: number, status: StepStatus): string {
+  const label = esc(STATUS_LABEL[status]);
+  return `<h2 id="step-${esc(n)}-title">${esc(STEP_TITLES[n - 1])}</h2><span class="step-status">${status === 'done' ? `<span class="visually-hidden">${label}</span>${CHECK}` : label}</span>`;
+}
+
+// Native disclosures keep every step accessible without JavaScript. The
+// summary retains the result when a completed step is folded away.
+export function stepPanel(n: number, status: StepStatus, hint: string, body: string, expanded = status === 'current' || status === 'active'): string {
+  return `<details class="panel step-panel" id="step-${n}"${expanded ? ' open' : ''}>
+    <summary class="step-head">${stepHead(n, status)}<span class="step-hint">${esc(hint)}</span></summary>
+    <div class="step-body">${body}</div>
+  </details>`;
 }
 
 const OK = new Set(['available', 'active', 'paid', 'complete', 'completed']);
 const BAD = new Set(['forbidden', 'unavailable', 'rejected', 'returned', 'failed', 'cancelled', 'canceled', 'expired', 'overdue']);
 
-// A state or status Abillio answered, as a tag: what went through reads in
-// the accent, what failed or is refused in red, anything under way in gray.
+// A state or status Abillio answered, as a tag: successful states read in
+// green, refusals in red, other states in gray.
 export function stateTag(value: string): string {
   const tone = OK.has(value) ? 'ok' : BAD.has(value) ? 'bad' : 'neutral';
   return `<code class="state is-${tone}">${esc(value)}</code>`;
@@ -50,11 +68,9 @@ export function stateTag(value: string): string {
 
 const CHECK = '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M3.5 8.5l3 3 6-7" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>';
 
-// The numbered rail the five panels hang on: each step's marker (its number,
-// a check once done) on one line, so the order and the progress read at a
-// glance. A step under way keeps its number.
+// Keep the step number on the left; its completion check is in the summary.
 export function rail(statuses: StepStatus[], panels: string[]): string {
-  return `<ol class="rail">${panels.map((panel, i) => `<li class="step is-${esc(statuses[i])}"><span class="step-marker" aria-hidden="true">${statuses[i] === 'done' ? CHECK : esc(i + 1)}</span>${panel}</li>`).join('')}</ol>`;
+  return `<ol class="rail">${panels.map((panel, i) => `<li class="step is-${esc(statuses[i])}"><span class="step-marker" aria-hidden="true">${esc(i + 1)}</span>${panel}</li>`).join('')}</ol>`;
 }
 
 export function jsonBlock(value: unknown): string {
@@ -69,7 +85,7 @@ export function tracePanel(entries: TraceEntry[]): string {
       <h3>Response</h3>${jsonBlock(e.responseBody)}
       ${e.error ? `<p class="error">${esc(e.error)}</p>` : ''}
     </details>`).join('');
-  return `<section id="trace" class="console-section" aria-labelledby="trace-title"><h2 id="trace-title">What we sent to Abillio</h2><p class="muted">Newest first. Headers are not shown. Secrets read <code>[redacted]</code> everywhere, and in Abillio's answers so do the onboarding link (the freelancer's to open) and the keys named for personal data: e-mail addresses, first, last and legal names, contact persons, phone numbers, addresses, bank accounts, personal codes, registration and VAT numbers. Display names and free text (notes, descriptions, invite messages) stay readable, and what you type on the join page shows as typed in the request. Everything else is exactly the wire.</p>${rows || '<p class="empty">Nothing yet — press a button.</p>'}</section>`;
+  return `<section id="trace" class="console-section" aria-labelledby="trace-title"><h2 id="trace-title">What we sent to Abillio</h2><details class="trace-note"><summary>Newest first. Headers are not shown.</summary><p class="muted">Secrets read <code>[redacted]</code> everywhere, and in Abillio's answers so do the onboarding link (the freelancer's to open) and the keys named for personal data: e-mail addresses, first, last and legal names, contact persons, phone numbers, addresses, bank accounts, personal codes, registration and VAT numbers. Display names and free text (notes, descriptions, invite messages) stay readable, and what you type on the join page shows as typed in the request. Everything else is exactly the wire.</p></details>${rows || '<p class="empty">Nothing yet — press a button.</p>'}</section>`;
 }
 
 // The answer's class, so the status reads as a colour too: 2xx went through,
@@ -82,10 +98,10 @@ export function errorBox(err: unknown): string {
   if (!err) return '';
   if (err instanceof AbillioError) {
     const blockers = err.blockers.length
-      ? `<ul class="blockers">${err.blockers.map(b => `<li><code>${esc(b.code)}</code> ${esc(b.message)}${b.capability ? ` <small>(${esc(b.capability)})</small>` : ''}</li>`).join('')}</ul>`
+      ? `<ul class="blockers">${err.blockers.map(b => `<li><span class="blocker-message">${esc(b.message)}</span><span class="blocker-meta"><code>${esc(b.code)}</code>${b.capability ? ` <small>(${esc(b.capability)})</small>` : ''}</span></li>`).join('')}</ul>`
       : '';
     const fields = Object.entries(err.fieldErrors ?? {}).map(([f, m]) => `<li><code>${esc(f)}</code> ${esc(Array.isArray(m) ? m.join('; ') : m)}</li>`).join('');
-    return `<div class="error-box" role="alert"><p class="error-title"><b>${esc(err.status)} ${esc(err.code)}</b> — ${esc(err.message)}</p>${err.hint ? `<p>${esc(err.hint)}</p>` : ''}${blockers}${fields ? `<ul class="fields-errors">${fields}</ul>` : ''}${err.requestId ? `<small>request_id ${esc(err.requestId)}</small>` : ''}</div>`;
+    return `<div class="error-box" role="alert"><p class="error-title">${esc(err.message)}</p><p class="error-code"><code>${esc(err.status)} ${esc(err.code)}</code></p>${err.hint ? `<p>${esc(err.hint)}</p>` : ''}${blockers}${fields ? `<ul class="fields-errors">${fields}</ul>` : ''}${err.requestId ? `<small>request_id ${esc(err.requestId)}</small>` : ''}</div>`;
   }
   return `<div class="error-box" role="alert"><p class="error-title">${esc((err as Error).message ?? String(err))}</p></div>`;
 }

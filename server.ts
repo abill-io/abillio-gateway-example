@@ -18,6 +18,7 @@ import { findEngagement, onboardingAction, onboardingBody, readSession, returnUr
 import { draftInvoice, findSelfClient, invoiceRequest, issueInvoice, pendingRequest } from './steps/03-issue.ts';
 import { DEFAULT_COMPANY, PAYOUT_OUTCOMES, findPayout, fundWallet, payAction, payInvoice, readInvoice, readPayout, simulateAction, simulatePayout } from './steps/04-pay.ts';
 import { WEBHOOK_ACTIONS, aboutThisWalk, connectWebhooks, pollForEvents, recordCompletion, recordPoll, sendTestDelivery, type PollResult } from './steps/05-events.ts';
+import { latestUpdate, type UpdateSummary } from './lib/updates.ts';
 import { companyPage } from './views/company.ts';
 import { joinPage } from './views/join.ts';
 import { page } from './views/layout.ts';
@@ -62,10 +63,14 @@ export function createApp(deps: Deps): Hono {
   const crossSite = csrf({ origin: (origin, c) => origin === new URL(c.req.url).origin || origin === publicOrigin });
   app.use(async (c, next) => (c.req.header('origin') === undefined && c.req.header('sec-fetch-site') === undefined ? next() : crossSite(c, next)));
   let lastKey: KeyReport | null = null;
-  const refreshListeners = new Set<() => void>();
-  // One place that says "the page should reload": the webhook receiver and
+  const refreshListeners = new Set<(update: UpdateSummary | null) => void>();
+  // One place that says "the page has an update": the webhook receiver and
   // the poller end up here.
-  const notifyStored = () => { deps.onStored(); for (const fn of refreshListeners) fn(); };
+  const notifyStored = () => {
+    deps.onStored();
+    const update = latestUpdate(deps.state.load());
+    for (const fn of refreshListeners) fn(update);
+  };
   // Which stored events reload the page: one about this walk, and a test
   // delivery, which a button asked for. A reset re-creates Abillio's demo
   // freelancers, and the subscription hears their invoice events too: stored
@@ -101,8 +106,11 @@ export function createApp(deps: Deps): Hono {
 
   // `c.html` is typed `Response | Promise<Response>` (it also takes a
   // Promise<string>); a route handler returns either.
-  const render = (c: { html: (s: string) => Response | Promise<Response> }, error: unknown = null) =>
-    c.html(companyPage({ state: publicState(deps.state.load()), trace: deps.trace.list(), key: lastKey, error, publicUrl: deps.publicUrl }));
+  const render = (c: { req: { path: string }; html: (s: string) => Response | Promise<Response> }, error: unknown = null) => {
+    const actionSteps: Record<string, number> = { key: 1, issue: 3, pay: 4, events: 5 };
+    const actionStep = actionSteps[c.req.path.split('/')[2] ?? ''];
+    return c.html(companyPage({ state: publicState(deps.state.load()), trace: deps.trace.list(), key: lastKey, error, publicUrl: deps.publicUrl, focusStep: error ? actionStep : undefined }));
+  };
 
   // One keyed call. The key is claimed in the store BEFORE the call, so an
   // overlapping press, a restart or a crash mid-call reuses it instead of
@@ -490,9 +498,13 @@ export function createApp(deps: Deps): Hono {
   // traced call would reload the page mid-request and throw the answer away.
   app.get('/events', c =>
     streamSSE(c, async stream => {
-      const send = () => stream.writeSSE({ event: 'refresh', data: String(Date.now()) });
+      const send = (update: UpdateSummary | null) => stream.writeSSE({ event: 'refresh', data: JSON.stringify(update) });
       refreshListeners.add(send);
       stream.onAbort(() => { refreshListeners.delete(send); });
+      // Compare this snapshot with the rendered page on every connection.
+      // This catches events missed between rendering and opening the stream,
+      // including when the capped log's total count no longer changes.
+      await stream.writeSSE({ event: 'snapshot', data: JSON.stringify(latestUpdate(deps.state.load())) });
       while (!stream.aborted) await stream.sleep(15_000);
     }),
   );

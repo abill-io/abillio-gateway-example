@@ -51,11 +51,11 @@ test('the progress line and the rail read where the walk stands off the stored s
   // What a reset sends about Abillio's demo freelancers (guide §13): a real
   // event, about an engagement this walk never had.
   const demo = { received_at: '2026-10-19T10:00:00.000Z', event_type: 'engagement.invoice.paid', data: { engagement_id: 'e-demo', invoice_uuid: 'inv-demo' }, via: 'webhook' as const, dedupe_key: 'd' };
-  const cases: { label: string; state: State; done: number; current: number | null; step2: string; facts?: string }[] = [
+  const cases: { label: string; state: State; done: number; current: number | null; step2: string; facts?: string; expanded?: number }[] = [
     { label: 'nothing stored', state: defaultState(), done: 0, current: 1, step2: 'Not yet' },
     {
       label: 'an engagement Abillio cannot pay yet is a step under way, not one done, and says so; step 3 is up next',
-      state: invited(), done: 1, current: 3, step2: 'In progress',
+      state: invited(), done: 1, current: 3, step2: 'In progress', expanded: 2,
       facts: 'engagement <code>e1</code> <code class="state is-neutral">invited</code>, can_be_paid <code>false</code>,',
     },
     { label: 'once Abillio says the freelancer can be paid, step 2 is done', state: joined(), done: 2, current: 3, step2: 'Done', facts: 'engagement <code>e1</code> <code class="state is-ok">active</code>, can_be_paid <code>true</code>,' },
@@ -64,13 +64,30 @@ test('the progress line and the rail read where the walk stands off the stored s
     { label: 'paid, and heard from Abillio: the walk is done', state: Object.assign(joined(), { invoice: invoice('paid'), events: [event] }), done: 5, current: null, step2: 'Done' },
     { label: 'an event about another walk is not step 5', state: Object.assign(joined(), { invoice: invoice('paid'), events: [demo] }), done: 4, current: 5, step2: 'Done' },
   ];
-  for (const { label, state, done, current, step2, facts } of cases) {
+  for (const { label, state, done, current, step2, facts, expanded } of cases) {
     const html = await (await appWith((async () => ({})) as Api, memoryState(state)).app.request('/')).text();
     assert.ok(html.includes(`${done} of 5 steps done`), label);
     assert.equal(html.match(/<li class="step is-current">[\s\S]*?id="step-(\d)"/)?.[1] ?? null, current === null ? null : String(current), label);
-    assert.equal(html.match(/id="step-2-title">[^<]*<\/h2><span class="step-status">([^<]*)</)?.[1], step2, label);
+    assert.equal(html.match(/id="step-2-title">[^<]*<\/h2><span class="step-status">(?:<span class="visually-hidden">)?([^<]*)</)?.[1], step2, label);
     if (facts) assert.ok(html.includes(facts), `${label}: step 2 says what Abillio said`);
+    const open = [...html.matchAll(/<details class="panel step-panel" id="step-(\d)" open>/g)].map(m => Number(m[1]));
+    assert.deepEqual(open, expanded ? [expanded] : current === null ? [] : [current], `${label}: only the next task is expanded`);
+    assert.match(html, /<details class="console developer-console" id="integration">/, `${label}: diagnostics start folded`);
   }
+});
+
+test('an unsuccessful action reopens its completed step so the error can be corrected', async () => {
+  const state = joinedState();
+  state.invoice = { id: 'inv-1', number: 'DEMO-1', status: 'paid', public_url: '' };
+  state.events = [{ received_at: '2026-10-20T10:00:00Z', event_type: 'engagement.invoice.paid', data: { invoice_uuid: 'inv-1' }, via: 'poll' }];
+  const { app } = appWith((async () => { throw new Error('Connection unavailable'); }) as Api, memoryState(state));
+  const before = await (await app.request('/')).text();
+  assert.match(before, /Walkthrough complete/);
+  assert.ok(!before.includes('id="step-1" open'));
+  const failed = await (await app.request('/steps/key', { method: 'POST' })).text();
+  assert.match(failed, /role="alert"[^]*Connection unavailable/);
+  assert.match(failed, /<details class="panel step-panel" id="step-1" open>/);
+  assert.equal([...failed.matchAll(/<details class="panel step-panel"[^>]* open>/g)].length, 1);
 });
 
 test('every font the pages name is served from here as woff2 and kept for a year; nothing asks a third party; the stylesheet is not kept', async () => {
@@ -84,7 +101,7 @@ test('every font the pages name is served from here as woff2 and kept for a year
     ...[...html.matchAll(/<link rel="preload" href="([^"]+)" as="font"/g)].map(m => m[1]),
     ...[...css.matchAll(/url\("(fonts\/[^"]+\.woff2)"\)/g)].map(m => `/public/${m[1]}`),
   ]);
-  assert.equal(urls.size, 3, [...urls].join(', '));
+  assert.equal(urls.size, 2, [...urls].join(', '));
   for (const url of urls) {
     const res = await app.request(url);
     assert.equal(res.status, 200, url);
@@ -105,6 +122,7 @@ test('POST /steps/key stores the account and shows the actions table; an error r
   assert.equal(res.status, 200);
   const html = await res.text();
   assert.ok(html.includes('Acme') && html.includes('freelancers.invite'));
+  assert.match(html, /class="step-hint">Connected to Acme · Some required actions are unavailable<\/span>/, 'missing permissions remain visible in the folded summary');
   assert.ok(!html.includes('dev@acme.test'), "the key owner's e-mail is not on the page");
   assert.deepEqual(state.load().account, { id: 'a1', name: 'Acme', slug: 'acme', is_sandbox: true, key_id: TEST_ENV.keyId, env_account: '' }, 'with whether it is a sandbox, which every write route asks, and the key and ABILLIO_ACCOUNT the answer is for');
 });
@@ -354,7 +372,7 @@ test('POST /steps/issue drafts and issues in one go and shows a 409 as blockers'
   const abillio = fakeIssueApi(call => { if (call.path.endsWith('/issue')) throw kycMissing(); });
   const { app, state } = appWith(abillio.api, memoryState(joinedState()));
   const html = await (await pressIssue(app)).text();
-  assert.ok(html.includes('<ul class="blockers"><li><code>kyc_missing</code> Identity not verified <small>(send_invoice)</small></li></ul>'), 'every blocker is a row of the checklist, with whose side it is on');
+  assert.ok(html.includes('<ul class="blockers"><li><span class="blocker-message">Identity not verified</span><span class="blocker-meta"><code>kyc_missing</code> <small>(send_invoice)</small></span></li></ul>'), 'every blocker shows its message, diagnostic code and capability');
   assert.equal(state.load().invoice?.status, 'draft', 'the draft is kept so a retry only issues');
   assert.equal(abillio.issues().length, 1);
 });
@@ -729,7 +747,7 @@ test('a completion heard by webhook makes step 2 done without the join page open
     const v1 = createHmac('sha256', v.secret).update(`${v.timestamp}.`).update(raw).digest('hex');
     return app.request('/webhooks/abillio', { method: 'POST', body: raw, headers: { 'content-type': 'application/json', 'x-timestamp': v.timestamp, 'x-signature': `t=${v.timestamp},v1=${v1}` } });
   };
-  const step2 = async () => (await (await app.request('/')).text()).match(/id="step-2-title">[^<]*<\/h2><span class="step-status">([^<]*)</)?.[1];
+  const step2 = async () => (await (await app.request('/')).text()).match(/id="step-2-title">[^<]*<\/h2><span class="step-status">(?:<span class="visually-hidden">)?([^<]*)</)?.[1];
   await deliver('s0', 'e0');
   assert.equal(await step2(), 'In progress', "another link's completion says nothing about this session");
   // This session completes while a status check is out: the session answer

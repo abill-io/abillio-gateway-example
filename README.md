@@ -3,10 +3,13 @@
 A company's side of an Abillio integration, small enough to read in one sitting:
 a freelancer joins through the Abillio popup, the company issues an invoice in
 their name, pays it from its wallet, the payout goes out, and webhooks tell the
-company what happened. Every call to Abillio is shown on the page as it is made.
+company what happened. Every call to Abillio is available under **Under the hood**.
 A hosted copy runs at https://demo.abillio.dev.
 
-![The Brightline Tutors back office after a full walk: the five steps on a numbered rail on the left, every call to Abillio and what the sample stores in the console on the right (the freelancer's e-mail masked for the picture)](docs/back-office.png)
+**Your Company** is a placeholder for your own brand. The pages illustrate how
+your company's website can connect freelancers to Abillio Gateway.
+
+![The company view in light mode: the connection and freelancer setup are complete, and the invoice step is open.](docs/back-office.jpg)
 
 It is one Node process with two pages: the company's back office at `/` and the
 freelancer's sign-up page at `/join`. It talks to Abillio's company API, signs
@@ -15,6 +18,73 @@ database in one readable file, `data/state.json`. The
 [partner integration guide](https://backend.abillio.dev/company-api/) is the
 reference; this repository is the worked example of its happy path, and each
 chapter below links back to it.
+
+## Try the two sides of the integration
+
+The back office is the **company's view**. The signup page is the
+**freelancer's view**, hosted under the company's own brand; Abillio handles
+account setup in a separate window.
+
+1. Open `/` and press **Check the key**. The result identifies the company
+   and whether it is a sandbox account.
+2. In step 2, choose **Register & connect with Abillio**. On `/join`, keep the
+   suggested test details and press **Continue with Abillio**. Complete the
+   setup in the Abillio window, then use **Back to company view**.
+3. Once the freelancer is ready, step 3 opens with the description, amount and
+   currency fields. **Draft and issue** creates and issues the invoice.
+4. In step 4, **Add test funds to the wallet** reveals the sandbox deposit
+   controls. Pay the invoice; if a payout is created, **Test payout outcomes**
+   reveals the optional bank-response simulators.
+5. Step 5 shows how many updates have arrived for this walkthrough. Without
+   `PUBLIC_URL`, the server checks for updates automatically every five seconds.
+
+For a fresh installation **with `PUBLIC_URL`**, open step 5 and press
+**Connect webhooks** immediately after checking the key, before starting the
+freelancer signup. This configures the receiver for the events the rest of the
+walk generates. See [step 5](#step-5--hear-from-abillio) for tunnel and delivery
+details.
+
+The current task opens automatically; completed steps fold into result
+summaries with a green check. Open any step to inspect it, or link directly to
+`/#step-1` through `/#step-5`. **Integration details** explains the API calls
+inside each step. **Under the hood**, below the walkthrough, contains request
+and response bodies and the stored state. On the signup page, session
+diagnostics are under **How this demo connects to Abillio**.
+
+The sun/moon control in the header switches between light and dark mode and
+remembers the choice in this browser. Without a saved choice, the page follows
+the system theme. The four-square home mark returns to the company view.
+
+### When an update arrives
+
+A notice above the steps shows a plain-language event title, its receipt time
+and whether it came from a **webhook** or **polling**. **View event** opens the
+event log in step 5, including its enclosing folded sections.
+
+An idle company view briefly says **Refreshing view…**, navigates to `GET /`
+and then says **View refreshed**. If a form has unsent changes, a field is
+focused, or an error is being reviewed, the notice offers **Refresh view**
+instead. Refreshing with unsent changes asks before discarding them. An action
+already being submitted finishes without a background navigation replacing
+its response.
+
+<details>
+<summary>An incoming webhook while an invoice form is being edited</summary>
+
+![A webhook receipt remains visible above the steps while Services, November stays in the invoice form; Refresh view is offered instead of automatically discarding the edit.](docs/live-update.jpg)
+
+</details>
+
+<details>
+<summary>The same company view in dark mode</summary>
+
+![The invoice step in dark mode, with a blue primary action, white secondary actions and green completion checks.](docs/back-office-dark.jpg)
+
+</details>
+
+The screenshots in this README were captured locally from the current views
+on 20 October 2026 using made-up demo data. They illustrate this working tree,
+not the release currently deployed at the hosted demo.
 
 ## Run it
 
@@ -30,6 +100,10 @@ cp .env.example .env    # then fill in the key, see below
 npm install
 npm start               # http://localhost:4000
 ```
+
+To use port 3000 instead, run `PORT=3000 npm start`. There is no separate
+`dev` script or asset build. Refresh the browser after CSS changes; restart
+`npm start` after changing TypeScript views or server code.
 
 The settings live in `.env`, which the npm scripts load with `node --env-file`:
 
@@ -115,14 +189,45 @@ same functions in the same order.
 records. `lib/store.ts` reads and writes `data/state.json`, always whole,
 through a temporary file and a rename, so a crash mid-write leaves the previous
 version intact. `lib/webhooks.ts` verifies and deduplicates deliveries. `views/`
-renders the two pages: the five steps on a numbered rail, with the progress line
-in the top bar read off the stored state, and the trace in a console beside
-them. `public/` holds the popup script, the page script, the stylesheet (plain
-CSS, no build) and the three fonts, Outfit, Source Sans 3 and JetBrains Mono,
-self-hosted under the SIL Open Font License with each licence beside its file in
-`public/fonts/`: the pages load nothing from anywhere else.
+renders the two pages: the back office introduces the company role, opens the
+next unfinished step and folds the others into result summaries. Each step has
+expandable integration details, and **Under the hood** holds the trace and stored
+state below the walkthrough. Unsuccessful actions reopen the relevant step;
+`public/steps.js` opens folded steps when following a direct `#step-N` link.
+`public/` holds the popup script, the page scripts, the stylesheet (plain
+CSS, no build) and self-hosted fonts under the SIL Open Font License with each
+licence beside its file in `public/fonts/`. The pages use Outfit for headings
+and prose and JetBrains Mono for code: they load nothing from anywhere else.
+The palette, typography, button proportions and 10px container corners follow
+the Abillio company API guide. Light and dark colors initially follow the system
+theme; the header switch saves the reader's choice in local browser storage.
+The sample company keeps its own placeholder identity.
 
-The right-hand column of the back office, **What we sent to Abillio**, is the
+For UI changes, start here:
+
+| File | Responsibility |
+|---|---|
+| `public/style.css` | Light/dark tokens, typography, buttons, fields, panels, progress, diagnostics and responsive layouts. |
+| `views/layout.ts` | Document head, home link, page navigation, theme control and company introduction. |
+| `views/partials.ts` | Step summaries, completion markers, status tags, errors and request traces. |
+| `views/company.ts` | The five company steps and their expanded content. |
+| `views/join.ts` | The freelancer invitation, signup form and session diagnostics. |
+| `public/theme.js` | System theme detection and the saved light/dark preference. |
+| `public/steps.js` | Opening folded content targeted by a URL fragment. |
+| `public/app.js` | Form submission feedback and company-view refreshes when updates arrive. |
+| `lib/updates.ts` | A safe, plain-language summary of the latest event for this walkthrough. |
+| `public/popup.js` | Opening Abillio onboarding and following its session status. |
+
+The visual conventions are flat surfaces without shadows, 10px card corners,
+a 1px blue border on the active/open step, blue primary actions and inverse
+secondary buttons (black in light mode, white in dark mode). The theme switch
+stays a quiet icon control. Cards and feedback blocks use full borders, without
+a decorative accent on one side.
+
+The [UX/UI audit](docs/ux-ui-audit.md) records the checked states, the live-update
+improvements and the remaining flow issues.
+
+Inside **Under the hood**, **What we sent to Abillio** is the
 trace of the last fifty calls, newest first: method, path, request body, status
 and response body as they went over the wire, minus what the page must not show
 to whoever opens it. A `GET` that comes back with the same answer as the last
@@ -415,7 +520,7 @@ only once `can_be_paid` is true, from the status check or from an
 **In progress**. The serving company decides which balance the company's
 payment draws on in step 4.
 
-![Brightline Tutors' sign-up page after the popup closed: the form on the left, the session status Abillio reports on the right](docs/join.png)
+![The freelancer's signup page before opening Abillio: why the connection is needed, three setup steps and the company's own form.](docs/join.jpg)
 
 In the sandbox the address is never looked up, written to or mailed: the
 session creates a sandbox freelancer who walks every step a newcomer does.
@@ -465,7 +570,7 @@ before the first call, so a retry sends exactly this:
 ```json
 {
   "client_uuid": "01a100d8-b5d2-…",
-  "items": [{ "description": "Tutoring, October", "quantity": "1", "unit_price": "100.00", "unit_code": "HUR" }],
+  "items": [{ "description": "Services, October", "quantity": "1", "unit_price": "100.00", "unit_code": "HUR" }],
   "currency_code": "EUR",
   "issued_date": "2026-10-19",
   "due_date": "2026-11-02",
@@ -528,7 +633,9 @@ what the bank does with it (`steps/04-pay.ts`; guide: paying what is billed to
 you, in [issuing](https://backend.abillio.dev/company-api/#issuing), and the
 deposit and payout simulators, in [sandbox](https://backend.abillio.dev/company-api/#sandbox)).
 
-**Fund the wallet** is the sandbox's stand-in for a bank transfer,
+Open **Add test funds to the wallet** in step 4 to reach **Fund the wallet**.
+After payment, those controls move inside **Integration details**.
+The deposit is the sandbox's stand-in for a bank transfer,
 `POST /accounts/wallet/sandbox/simulate-deposit` under a fresh key each press:
 
 ```json
@@ -560,7 +667,7 @@ the company that issued the invoice, and another company's row does not help.
 
 It debits what the invoice still owes, so a part-paid invoice is settled for the
 remainder and never twice. Pressing again replays this exact answer with
-`Idempotent-Replay: true`, which is what the back office screenshot above shows.
+`Idempotent-Replay: true`, visible in the request trace under **Under the hood**.
 Abillio then creates the automatic payout inside the same request, and the
 sample finds it with `GET /engagements/{engagement_id}/payouts/?invoice_uuid={invoice_id}`
 (abridged):
@@ -580,8 +687,8 @@ sample finds it with `GET /engagements/{engagement_id}/payouts/?invoice_uuid={in
 ```
 
 and reads the invoice back with `GET /accounts/invoices/{invoice_id}/`, which
-now says `"status": "paid"` and `"paid_via": "wallet"`. In the sandbox the four
-**Simulate** buttons send
+now says `"status": "paid"` and `"paid_via": "wallet"`. In the sandbox, open
+**Test payout outcomes** to reveal the four **Simulate** buttons. They send
 `POST /engagements/{engagement_id}/payouts/{payout_id}/sandbox/simulate` with
 `{ "outcome": "paid" }` (or `processing`, `rejected`, `returned`). The simulator
 runs the real lifecycle and emits the real events; it answered with the payout,
@@ -733,12 +840,18 @@ through the real flows, so after **Start over** their `engagement.invoice.confir
 `engagement.invoice.status_changed` and `engagement.invoice.paid` arrive as if
 they had just happened ([guide: questions partners ask](https://backend.abillio.dev/company-api/#faq)).
 The sample counts only what names the stored walk: an event counts for step 5,
-and reloads the open back office, when it carries the stored `session_id`,
+and notifies the open back office, when it carries the stored `session_id`,
 `engagement_id`, `invoice_uuid` or `payout_uuid` (`aboutThisWalk` in
 `steps/05-events.ts`). Every other event is still stored and listed, tagged
-**not this walk**; a test delivery is listed the same way, and reloads the
-page because a button asked for it. A real integration does the same: it acts
+**not this walk**; a test delivery is listed the same way, and announces an
+update because a button asked for it. A real integration does the same: it acts
 only on the `engagement.*` events whose `engagement_id` it created itself.
+
+The browser receives safe event summaries over `/events` (server-sent events).
+Each connection starts with a snapshot, so an update missed during connection
+or reconnection is detected even when the event log is at its 200-entry limit.
+The visible notice and the refresh rules are described in
+[When an update arrives](#when-an-update-arrives).
 
 **Without a public URL.** There is no Connect button, and every five seconds the
 server makes the same reads the steps make (`GET /onboarding/sessions/{id}`
@@ -766,7 +879,7 @@ means the clock or a replayed old delivery.
 
 ## Start over
 
-**Start over** (in the top bar, beside the progress line, after a confirmation)
+**Start over** (beside the progress line below the introduction, after a confirmation)
 calls `POST /accounts/sandbox/reset` under a fresh key, which Abillio answers
 with `{ "ok": true }` after putting the sandbox's own demo data back as it was
 seeded. The freelancers you onboarded, their engagements, invoices and payouts
@@ -866,7 +979,7 @@ def abillio(method, path, payload=None, idempotency_key=None):
         'Accept': 'application/json',
         # Cloudflare in front of Abillio refuses Python's urllib default
         # User-Agent (error 1010); name your integration in every client.
-        'User-Agent': 'brightline-tutors/1.0',
+        'User-Agent': 'your-company/1.0',
     }
     if ACCOUNT:
         headers['X-Account'] = ACCOUNT

@@ -1,6 +1,7 @@
 (() => {
   // Set once a button's form is on its way: its answer is a fresh page anyway.
   let submitting = false;
+  let resumeUpdates = () => {};
   // The buttons a submit disabled, so they and only they come back.
   const disabled = new Set();
   // A form whose navigation was abandoned (stopped, a dead connection) or a
@@ -10,32 +11,90 @@
     submitting = false;
     for (const b of disabled) { b.disabled = false; b.classList.remove('is-working'); }
     disabled.clear();
+    resumeUpdates();
   };
   window.addEventListener('pageshow', event => { if (event.persisted) settle(); });
 
-  // A stored webhook or poll result refreshes the back office (the page with
-  // the event count) — by navigating to its GET address, never `reload()`:
-  // after a button the URL is the POST route, and reloading that would re-send
-  // the step. Not while a button's request is out: navigating then would
-  // throw its answer away (an error box with it), and that answer is rendered
-  // from the state as it is by then. The join page follows its session with
-  // its own poll, which a reload would stop (and a half-typed form would be
-  // lost); /back is the popup's last page. Neither listens.
+  // Show what arrived before refreshing. Never replace an edited form, an
+  // action in flight, or an error the reader is still trying to resolve.
+  // Navigation is always GET /: reloading a POST route would resend a step.
+  // The join page follows its own session and does not listen to this stream.
   const live = document.querySelector('main[data-events]');
   if (live) {
-    const refresh = () => { if (!submitting) location.replace('/'); };
-    const source = new EventSource('/events');
-    source.addEventListener('refresh', refresh);
-    // An event stored after this page was rendered but before its stream
-    // connected was announced to nobody: compare the count once per connection.
-    source.addEventListener('open', async () => {
+    const notice = live.querySelector('[data-live-update]');
+    const title = notice.querySelector('[data-update-title]');
+    const detail = notice.querySelector('[data-update-detail]');
+    const refreshButton = notice.querySelector('[data-update-refresh]');
+    const eventLink = notice.querySelector('[data-update-link]');
+    const rendered = JSON.parse(notice.dataset.update);
+    const receiptKey = 'gateway-example-refreshed-update';
+    let pending = null;
+    let hasEdits = false;
+    let refreshTimer = null;
+    const focusedField = () => /^(INPUT|SELECT|TEXTAREA)$/.test(document.activeElement?.tagName ?? '');
+    const hasError = () => Boolean(live.querySelector('.error-box'));
+    const receipt = update => {
+      const at = new Date(update.receivedAt);
+      const time = Number.isNaN(at.getTime()) ? '' : ` · ${at.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })}`;
+      return `${update.via === 'webhook' ? 'Webhook received' : 'Update found by polling'}${time}`;
+    };
+    if (rendered) {
+      let refreshed = false;
       try {
-        const state = await (await fetch('/api/state')).json();
-        if (state.events.length !== Number(live.dataset.events)) refresh();
-      } catch {
-        // The next stored event refreshes the page anyway.
+        refreshed = sessionStorage.getItem(receiptKey) === rendered.key;
+        sessionStorage.removeItem(receiptKey);
+      } catch { /* The receipt still shows when storage is unavailable. */ }
+      detail.textContent = `${receipt(rendered)}${refreshed ? ' · View refreshed.' : ''}`;
+    }
+    const refresh = () => {
+      if (pending) {
+        try { sessionStorage.setItem(receiptKey, pending.key); } catch { /* Optional feedback across navigation. */ }
       }
+      location.replace('/');
+    };
+    const showPending = () => {
+      if (!pending) return;
+      clearTimeout(refreshTimer);
+      refreshTimer = null;
+      notice.hidden = false;
+      notice.classList.add('is-pending');
+      title.textContent = pending.title;
+      eventLink.hidden = true;
+      const hold = submitting || hasEdits || focusedField() || hasError();
+      refreshButton.hidden = submitting || !hold;
+      let next = 'Refreshing view…';
+      if (submitting) next = 'Waiting for your current action to finish.';
+      else if (hasEdits) next = 'Your unsent changes are kept. Refresh when ready.';
+      else if (focusedField()) next = 'Finish with the form, then refresh when ready.';
+      else if (hasError()) next = 'Refresh when you have finished reviewing the error.';
+      detail.textContent = `${receipt(pending)} · ${next}`;
+      if (!hold) {
+        refreshTimer = setTimeout(() => {
+          if (submitting || hasEdits || focusedField() || hasError()) showPending();
+          else refresh();
+        }, 1200);
+      }
+    };
+    const receive = event => {
+      let update;
+      try { update = JSON.parse(event.data); } catch { return; }
+      if (!update || typeof update.key !== 'string' || typeof update.title !== 'string' || update.key === rendered?.key) return;
+      pending = update;
+      showPending();
+    };
+    for (const form of live.querySelectorAll('form')) {
+      const edited = () => { hasEdits = true; showPending(); };
+      form.addEventListener('input', edited);
+      form.addEventListener('change', edited);
+    }
+    refreshButton.addEventListener('click', () => {
+      if (hasEdits && !confirm('Refresh the view and discard your unsent changes?')) return;
+      refresh();
     });
+    resumeUpdates = showPending;
+    const source = new EventSource('/events');
+    source.addEventListener('refresh', receive);
+    source.addEventListener('snapshot', receive);
   }
 
   for (const form of document.querySelectorAll('form')) {
