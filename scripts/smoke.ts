@@ -3,10 +3,9 @@
 // the first error so it can gate a release. The state lives in memory only:
 // every run mints its own keys, so it is a new invoice and a new payment each
 // time, and data/state.json is never touched.
-import { realpathSync } from 'node:fs';
-import { fileURLToPath } from 'node:url';
 import { AbillioError, createApi, type Api } from '../lib/abillio.ts';
 import { loadEnv } from '../lib/env.ts';
+import { startedAsScript } from '../lib/script.ts';
 import { defaultState } from '../lib/store.ts';
 import { checkKey } from '../steps/01-key.ts';
 import { returnUrlFor, startOnboarding } from '../steps/02-onboard.ts';
@@ -104,19 +103,7 @@ async function main(): Promise<void> {
   }
 }
 
-// Whether node was started with this file. Real paths on both sides: started
-// through a symlink, node resolves the module to its real path but leaves
-// argv as typed, and a string comparison would skip main() and exit 0.
-function startedAsScript(): boolean {
-  if (!process.argv[1]) return false;
-  try {
-    return realpathSync(process.argv[1]) === realpathSync(fileURLToPath(import.meta.url));
-  } catch {
-    return false;
-  }
-}
-
-if (startedAsScript()) {
+if (startedAsScript(import.meta.url)) {
   await main();
 } else if (process.env.npm_lifecycle_event === 'smoke') {
   // `npm run smoke` that never reached main() must not pass a release gate.

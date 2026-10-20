@@ -9,6 +9,7 @@ import { csrf } from 'hono/csrf';
 import { streamSSE } from 'hono/streaming';
 import { AbillioError, createApi, type Api } from './lib/abillio.ts';
 import { loadEnv } from './lib/env.ts';
+import { startedAsScript } from './lib/script.ts';
 import { appendEvent, defaultState, forgetIdempotencyKey, loadState, updateState, type KeyedOptions, type State, type Store, type StoredEvent } from './lib/store.ts';
 import { Trace, trace as processTrace } from './lib/trace.ts';
 import { dedupeKey, parseDelivery, verifySignature } from './lib/webhooks.ts';
@@ -547,4 +548,4 @@ export function main(): void {
   });
 }
 
-if (process.argv[1] && import.meta.url === new URL(`file://${process.argv[1]}`).href) main();
+if (startedAsScript(import.meta.url)) main();

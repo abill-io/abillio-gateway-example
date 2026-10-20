@@ -1,12 +1,12 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { spawnSync } from 'node:child_process';
 import { mkdtempSync, rmdirSync, symlinkSync, unlinkSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { AbillioError, type Api } from '../lib/abillio.ts';
 import { WRONG_ENGAGEMENT, describeError, runSmoke } from '../scripts/smoke.ts';
+import { runNode as node } from './helpers.ts';
 
 const invoice = (number: string, status: string) => ({ id: 'inv-1', invoice_number: number, status, public_url: 'u', amounts: { total: { amount: '12.10', currency: 'EUR' } } });
 
@@ -73,8 +73,6 @@ test("a failed fetch's reason is printed: the error's cause, an AggregateError's
 
 test('the smoke runs when started through a symlink, and an npm run smoke that never reaches it fails instead of passing', () => {
   const root = fileURLToPath(new URL('..', import.meta.url));
-  const node = (args: string[], env: Record<string, string>) =>
-    spawnSync(process.execPath, ['--experimental-strip-types', '--disable-warning=ExperimentalWarning', ...args], { env: { PATH: process.env.PATH ?? '', ...env }, encoding: 'utf8' });
   // No key in the environment: a smoke that runs fails on it; one that never
   // ran would exit 0, and a release gate would pass.
   const dir = mkdtempSync(join(tmpdir(), 'gw-smoke-'));

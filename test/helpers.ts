@@ -1,4 +1,11 @@
+import { spawnSync } from 'node:child_process';
 import { defaultState, type State } from '../lib/store.ts';
+
+// Node as `npm start` and `npm run smoke` start it, with nothing in the
+// environment but PATH and what the test passes.
+export function runNode(args: string[], env: Record<string, string> = {}) {
+  return spawnSync(process.execPath, ['--experimental-strip-types', '--disable-warning=ExperimentalWarning', ...args], { env: { PATH: process.env.PATH ?? '', ...env }, encoding: 'utf8' });
+}
 
 // The two stores the tests hand to the routes and steps, in place of
 // data/state.json.
