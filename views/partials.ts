@@ -59,7 +59,7 @@ export function jsonBlock(value: unknown): string {
 export function tracePanel(entries: TraceEntry[]): string {
   const rows = [...entries].reverse().map(e => `
     <details class="trace"${e === entries.at(-1) ? ' open' : ''}>
-      <summary><span class="trace-call"><code><span class="method">${esc(e.method)}</span> ${esc(e.path)}</code> → <b class="${esc(statusClass(e.status))}">${esc(e.status ?? 'network error')}</b>${e.replayed ? ' <span class="tag">Idempotent-Replay</span>' : ''}</span><span class="trace-meta">${e.idempotencyKey ? `<small>Idempotency-Key ${esc(e.idempotencyKey)}</small> ` : ''}<small>${esc(e.at)}</small></span></summary>
+      <summary><span class="trace-call"><code><span class="method">${esc(e.method)}</span> ${esc(e.path)}</code> → <b class="${esc(statusClass(e.status))}">${esc(e.status ?? 'network error')}</b>${e.replayed ? ' <span class="tag">Idempotent-Replay</span>' : ''}${(e.count ?? 1) > 1 ? ` <span class="tag" title="The same read, answered the same, ${esc(e.count)} times">×${esc(e.count)}</span>` : ''}</span><span class="trace-meta">${e.idempotencyKey ? `<small>Idempotency-Key ${esc(e.idempotencyKey)}</small> ` : ''}<small>${esc(e.at)}</small></span></summary>
       ${e.requestBody !== null ? `<h3>Request body</h3>${jsonBlock(e.requestBody)}` : ''}
       <h3>Response</h3>${jsonBlock(e.responseBody)}
       ${e.error ? `<p class="error">${esc(e.error)}</p>` : ''}

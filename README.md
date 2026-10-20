@@ -123,7 +123,10 @@ self-hosted under the SIL Open Font License with each licence beside its file in
 The right-hand column of the back office, **What we sent to Abillio**, is the
 trace of the last fifty calls, newest first: method, path, request body, status
 and response body as they went over the wire, minus what the page must not show
-to whoever opens it. Headers are never recorded, and any body key named
+to whoever opens it. A `GET` that comes back with the same answer as the last
+time it was asked (the poller and the join page's status check, every few
+seconds) folds into that entry, which moves up with a ×N count, so the walk's
+own calls stay in view. Headers are never recorded, and any body key named
 `secret`, `private_key`, `password`, `token` or `user_email` reads `[redacted]`.
 Personal data reads `[redacted]` too, by the name of its key: in an answer from
 Abillio, the keys named for an e-mail address (`email`, `accounting_email`,
