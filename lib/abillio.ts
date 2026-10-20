@@ -82,6 +82,17 @@ function fieldKey(path: unknown): string {
 
 // The causes a developer meets first, said before they go looking elsewhere.
 function hintFor(status: number, code: string): string | null {
+  // The idempotency layer's codes are about the key, not the request, whatever
+  // the status (a 403 among them), so they come first (guide §2 and §13). Only
+  // in_progress turns into a replay; the others answer the same for good. A
+  // key too long for Abillio (idempotency_key_invalid) holds nothing, and the
+  // sample's UUIDs never are.
+  if (code === 'idempotency_in_progress') {
+    return 'An earlier attempt under this key is still running: press again in a moment, and once it has succeeded the identical request gets its answer as a replay. If this answer persists, read it back instead.';
+  }
+  if (code.startsWith('idempotency_') && code !== 'idempotency_key_invalid') {
+    return "Abillio still holds this key for an earlier attempt: read it back (it may have done its work), and send the action under a new key only once the read-back shows it did not happen. Pressing again answers the same; Start over clears the sample's keys.";
+  }
   if (status === 401) {
     return 'Abillio refused the signature. The usual causes: this machine\'s clock is more than 300 seconds off, ABILLIO_PRIVATE_KEY is not the seed shown when the key was minted, or the key is bound to another account than ABILLIO_ACCOUNT.';
   }

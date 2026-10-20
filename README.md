@@ -143,26 +143,51 @@ key comes back with the same body ([guide: retrying safely](https://backend.abil
 The sample's client refuses to send a `POST` or `PATCH` without a key, and every
 key is stored in `data/state.json` under the action it belongs to:
 `onboard:<e-mail>:<digest of the body>`, `draft:<engagement>`,
-`issue:<invoice>`, `pay:<invoice>`, `webhook:channel` and
-`webhook:subscription`. A key is claimed in the store **before** the call, so
-two overlapping presses, a restart or a crash mid-call send the same key instead
-of minting a second one.
+`issue:<invoice>`, `pay:<invoice>`, `simulate:<payout>:<outcome>`,
+`webhook:channel` and `webhook:subscription`. A key is claimed in the store
+**before** the call, so two overlapping presses, a restart or a crash mid-call
+send the same key instead of minting a second one.
 
 What happens to a key afterwards depends on the answer. After a success it is
 kept, and pressing the button again replays the first answer: the trace marks it
 **Idempotent-Replay**, and no second invoice or payment exists. After a refusal
 Abillio composed itself (a 4xx in its `error` envelope) the key is forgotten,
 because Abillio keeps a spent key and would answer a retry with 409, so the next
-press is a new attempt. An answer from Abillio's idempotency layer is not such a
-refusal: it says Abillio still holds the key for an earlier attempt, as a bare
-`{"detail": …}` from an older backend or as an `idempotency_*` code in the
-envelope (`idempotency_in_progress`, `idempotency_key_reused`,
-`idempotency_reconciliation_required`, …). After it, as after a 5xx or a network
-failure, the outcome is unknown: the key is kept, and the next press replays
-whatever the first attempt did. For the same reason the request body is stored
-with its key (`invoice_request`, `webhook_request`): a retry sends exactly the
-same bytes, even on another day, since a different body under the same key is
-refused for good.
+press is a new attempt. After a 5xx or a network failure the outcome is
+unknown: the key is kept, and so is the request body that went out under it
+(`invoice_request`, `webhook_request`), so the next press sends exactly the same
+bytes under the same key, even on another day, since a different body under a
+key Abillio holds is refused for good.
+
+An answer from Abillio's idempotency layer is no verdict on the request either.
+Its code starts with `idempotency_` (an older backend answers a bare
+`{"detail": …}` instead), and it says Abillio still holds the key for an earlier
+attempt, which may have done its work. The sample keeps the key, and what comes
+next depends on the code
+([guide: questions partners ask](https://backend.abillio.dev/company-api/#faq)):
+
+- `idempotency_in_progress`: the earlier attempt is still running. Press again a
+  little later, and once that attempt has succeeded the identical request gets
+  its answer as a replay. A claim that never finishes (after a 5xx on an action
+  that is not atomic, below) answers this for five minutes, and
+  `idempotency_reconciliation_required` after that.
+- `idempotency_key_reused` (the key went out with another body),
+  `idempotency_replay_forbidden` (what the stored answer was bound to has
+  changed: the key was rotated, or the engagement's status or mandate moved)
+  and `idempotency_reconciliation_required` (the earlier attempt never
+  finished, or its answer cannot be served) never turn into a replay. Pressing
+  again answers the same for good, and the claim does not expire into
+  permission to retry. Read the resource back instead (for an issue or a
+  payment, `GET /accounts/invoices/{id}/`), and send the action under a new key
+  only once the read-back shows it did not happen.
+
+The error box says the same under each code. In the sample, **Start over** is
+the way out of a key Abillio holds for good: it clears every stored key except
+the webhook's (see [Start over](#start-over)). One walk that ends there:
+freelancer A, then B, then A again. A's draft key is still stored, while the
+invoice and the request that went out under it were cleared with B, so A's new
+request (another day, another description) goes out under the old key and
+answers `idempotency_key_reused`.
 
 A few actions deliberately take a fresh key on every press, because each press
 is meant to run again: the sandbox deposit, the test delivery, Start over, and
@@ -175,14 +200,16 @@ the onboarding mint, because its link is single-use and the one answered before
 may already have been opened, so every press of **Continue with Abillio** mints
 a new link.
 
-Two cases are worth knowing before you copy the pattern. The issue call is not
-atomic: after a 5xx Abillio keeps the claim, and a retry gets a 409,
-`idempotency_reconciliation_required` (a bare answer from an older backend), that
-says the request requires reconciliation until an operator settles it, so read
-the invoice back with `GET /accounts/invoices/{id}/` rather than pressing again.
-And `pay:<invoice>` replays the first payment's success for as long as the key
-is stored, so if an invoice ever owes money again (after a chargeback), a second
-real payment needs a new key.
+Two cases are worth knowing before you copy the pattern. Issuing and paying
+are not atomic (drafting is: a draft that failed leaves nothing behind, and its
+key can be used again). After a 5xx on the issue call or on the payment,
+Abillio keeps the claim, so a retry first answers `idempotency_in_progress` for
+five minutes and then `idempotency_reconciliation_required` until an operator
+settles it. Read the invoice back with `GET /accounts/invoices/{id}/` rather
+than pressing again: it says whether it was issued, or paid. And `pay:<invoice>`
+replays the first payment's success for as long as the key is stored, so if an
+invoice ever owes money again (after a chargeback), a second real payment needs
+a new key.
 
 The sample never retries anything on its own. The stored key is what makes a
 person's retry safe; an automatic retry would hide the cause of the failure from

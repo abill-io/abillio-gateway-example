@@ -293,3 +293,13 @@ test('only an enveloped answer below 500 is verified, and not the idempotency la
     });
   }
 });
+
+test('an idempotency_* answer says what to do next: in_progress replays a moment later; the others never replay, so read back, and Start over clears the keys', () => {
+  const hint = (status: number, code: string) => new AbillioError(status, { error: { code, message: 'm' } }, '').hint ?? '';
+  assert.match(hint(409, 'idempotency_in_progress'), /press again in a moment/);
+  // A 403 among them: the hint is about the key, not the key's permissions.
+  for (const [status, code] of [[409, 'idempotency_key_reused'], [409, 'idempotency_reconciliation_required'], [403, 'idempotency_replay_forbidden']] as const) {
+    assert.match(hint(status, code), /^Abillio still holds this key for an earlier attempt: read it back/, code);
+    assert.match(hint(status, code), /Start over clears the sample's keys/, code);
+  }
+});
