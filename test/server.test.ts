@@ -265,6 +265,107 @@ test("GET /join pre-fills a fresh made-up address on every load, never the store
   assert.ok(/id="status">[\s\S]*last\.visitor@example\.com/.test(html), 'the stored session is still shown');
 });
 
+// What the hosted copy stored on 2026-10-20: the freelancer finished the
+// popup and the engagement is `active`, but the join page was closed before
+// its status check stored that they can be paid, and no webhook was connected
+// to say so.
+function notYetPayable(): State {
+  const s = joinedState();
+  s.freelancer = { ...s.freelancer!, can_be_paid: false };
+  return s;
+}
+
+const SESSION_READ = 'GET /onboarding/sessions/s1';
+const ENGAGEMENT_READ = 'GET /engagements/?search=anna%40example.com';
+
+// Abillio's two status reads about Anna, recorded: the session answers
+// `answer` (an Error fails the read), the engagement is e1, `active`.
+// `meanwhile` runs while the session read is out.
+function statusApi(answer: { can_be_paid: boolean } | Error, meanwhile: () => void = () => {}) {
+  const calls: string[] = [];
+  const api = (async (method: string, path: string) => {
+    const call = `${method} ${path}`;
+    calls.push(call);
+    if (call === SESSION_READ) {
+      meanwhile();
+      if (answer instanceof Error) throw answer;
+      return { state: answer.can_be_paid ? 'complete' : 'in_progress', can_be_paid: answer.can_be_paid, purpose: 'onboarding', requirements: [] };
+    }
+    if (call === ENGAGEMENT_READ) return { count: 1, items: [{ id: 'e1', status: 'active', counterparty: { email: 'anna@example.com', servicing_company: { slug: 'abillio-ks' } }, compliance: { can_be_paid: !(answer instanceof Error) && answer.can_be_paid } }] };
+    throw new Error(`unexpected ${call}`);
+  }) as Api;
+  return { api, calls };
+}
+
+const step2Status = (html: string) => html.match(/id="step-2-title">[^<]*<\/h2><span class="step-status">(?:<span class="visually-hidden">)?([^<]*)</)?.[1];
+
+test('opening the back office asks Abillio about a freelancer it cannot pay yet: once the session says they can be paid, step 2 is done, with no join page open and no webhook', async () => {
+  // The hosted copy's bug: once the join page was closed nothing read the
+  // session again, and step 2 read "In progress" for good.
+  const abillio = statusApi({ can_be_paid: true });
+  const { app, state } = appWith(abillio.api, fileLikeState(notYetPayable()), 'https://x');
+  const html = await (await app.request('/')).text();
+  assert.deepEqual(abillio.calls, [SESSION_READ, ENGAGEMENT_READ], 'the two reads a status check makes, once each');
+  assert.deepEqual(state.load(), joinedState(), 'what a status check stores: the freelancer can be paid');
+  assert.ok(html.includes('2 of 5 steps done'));
+  assert.equal(step2Status(html), 'Done');
+});
+
+test('a load whose reads change nothing renders the page as stored and stores nothing: the session still says not yet, the read is refused, or a newer join replaced the session while the reads were out', async () => {
+  const ben = { email: 'ben@example.com', session_id: 's2', session_url: 'https://new.abillio.dev/s/t2', engagement_id: null, engagement_status: null, can_be_paid: false, servicing_company_slug: null };
+  const cases: { label: string; answer: { can_be_paid: boolean } | Error; newerJoin?: boolean; calls: string[] }[] = [
+    { label: 'the session still says not yet', answer: { can_be_paid: false }, calls: [SESSION_READ, ENGAGEMENT_READ] },
+    // A refused read does not take the page down with it (the trace shows it).
+    { label: 'the session read is refused', answer: new AbillioError(401, { error: { code: 'unauthorized', message: 'Unauthorized' } }, ''), calls: [SESSION_READ] },
+    // The answer is about Anna's session, and Ben joined while it was out.
+    { label: 'a newer join replaced the session', answer: { can_be_paid: true }, newerJoin: true, calls: [SESSION_READ, ENGAGEMENT_READ] },
+  ];
+  for (const { label, answer, newerJoin, calls } of cases) {
+    const store = fileLikeState(notYetPayable());
+    const abillio = statusApi(answer, () => { if (newerJoin) store.update(s => { s.freelancer = ben; }); });
+    const res = await appWith(abillio.api, store, 'https://x').app.request('/');
+    assert.equal(res.status, 200, label);
+    const html = await res.text();
+    assert.deepEqual(abillio.calls, calls, `${label}: the reads were made`);
+    assert.deepEqual(store.load(), newerJoin ? { ...notYetPayable(), freelancer: ben } : notYetPayable(), `${label}: nothing is written`);
+    assert.ok(html.includes('1 of 5 steps done') && step2Status(html) === 'In progress', `${label}: the page reads as stored`);
+    assert.ok(!html.includes('role="alert"'), `${label}: with no error of its own`);
+  }
+});
+
+test('the back office reads nothing on load unless a freelancer Abillio cannot pay yet is stored and the key is checked', async () => {
+  const cases: [string, State][] = [
+    ['nobody has joined', sandboxState()],
+    ['the freelancer can be paid', joinedState()],
+    ['the key is not checked', { ...notYetPayable(), account: null }],
+    // A check stored under another key reads as none, on the page too.
+    ['the key was checked under another key id', { ...notYetPayable(), account: { ...sandboxState().account!, key_id: 'key_0' } }],
+  ];
+  for (const [label, initial] of cases) {
+    const abillio = statusApi({ can_be_paid: true });
+    const res = await appWith(abillio.api, memoryState(initial), 'https://x').app.request('/');
+    assert.equal(res.status, 200, label);
+    assert.deepEqual(abillio.calls, [], label);
+  }
+});
+
+test('on a public URL with no webhook connected, step 2 says the page learns about a freelancer it cannot pay yet only when it is opened', async () => {
+  const hint = `<p class="muted">Webhooks are not connected yet, so this page learns about the freelancer's progress only when it is opened. Connect them in step 5 to hear about it as it happens.</p>`;
+  const connected = { ...notYetPayable(), webhook: { channel_id: 'ch1', subscription_id: 'sub1', secret: 'a'.repeat(64), url: 'https://x/webhooks/abillio' } };
+  const cases: [string, State, string | null, boolean][] = [
+    ['a public URL, no webhook, not payable yet', notYetPayable(), 'https://x', true],
+    ['no public URL: the server polls', notYetPayable(), null, false],
+    ['webhooks connected', connected, 'https://x', false],
+    ['the freelancer can be paid', joinedState(), 'https://x', false],
+    ['nobody has joined', sandboxState(), 'https://x', false],
+  ];
+  for (const [label, initial, publicUrl, shown] of cases) {
+    const html = await (await appWith(statusApi({ can_be_paid: false }).api, memoryState(initial), publicUrl).app.request('/')).text();
+    assert.equal(html.includes(hint), shown, label);
+    if (shown) assert.ok(html.includes(`their status updates automatically.</p>${hint}`), `${label}: right after the facts line`);
+  }
+});
+
 // --- Step 3 -------------------------------------------------------------------
 
 type App = ReturnType<typeof appWith>['app'];

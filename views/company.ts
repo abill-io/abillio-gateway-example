@@ -44,13 +44,17 @@ export function keyPanel(key: KeyReport | null, state: State, status: StepStatus
   `, expanded);
 }
 
-export function onboardingPanel(state: State, status: StepStatus = stepStatuses(state)[1], expanded?: boolean): string {
+export function onboardingPanel(state: State, publicUrl: string | null, status: StepStatus = stepStatuses(state)[1], expanded?: boolean): string {
   const f = state.freelancer;
   const hint = f ? `${f.email} · ${f.can_be_paid ? 'Ready to be paid' : 'Setup in progress'}` : 'Try the signup page your freelancers would use.';
   const signup = `<a class="button-link${f ? ' secondary' : ''}" href="/join">${f ? 'Open freelancer signup' : 'Register & connect with Abillio'}</a>`;
+  // With a public URL the server does not poll: until webhooks are connected,
+  // the freelancer's progress reaches this page only when it is opened (the
+  // status check server.ts makes on load).
+  const unheard = publicUrl && !state.webhook && f && !f.can_be_paid ? `<p class="muted">Webhooks are not connected yet, so this page learns about the freelancer's progress only when it is opened. Connect them in step 5 to hear about it as it happens.</p>` : '';
   return stepPanel(2, status, hint, `
     <p class="step-copy">${f ? (f.can_be_paid ? 'Freelancer setup is complete. Continue with the invoice in step 3.' : 'The freelancer has started connecting with Abillio. Their setup needs to be completed before they can receive payments.') : 'Now try the freelancer’s side. They sign up on your company’s page, then connect with Abillio to complete their account and payout setup.'}</p>
-    ${f ? `<p class="facts"><b>${esc(f.email)}</b> — ${f.can_be_paid ? 'Abillio confirms this freelancer is ready to be paid.' : 'Setup is in progress. Finish the Abillio window already opened for this freelancer; their status updates automatically.'}</p>` : '<p class="muted">Nobody has joined yet.</p>'}
+    ${f ? `<p class="facts"><b>${esc(f.email)}</b> — ${f.can_be_paid ? 'Abillio confirms this freelancer is ready to be paid.' : 'Setup is in progress. Finish the Abillio window already opened for this freelancer; their status updates automatically.'}</p>` : '<p class="muted">Nobody has joined yet.</p>'}${unheard}
     ${state.account ? (f ? `<details class="sandbox-tools"><summary>Try another signup</summary><p class="muted">Opening the signup page again starts another signup; it does not resume the existing Abillio window.</p>${signup}</details>` : `${signup}<p class="step-help">This opens the freelancer view. Return to the company view after setup to issue their invoice.</p>`) : '<p class="muted">Check the company connection in step 1 to begin.</p>'}
     ${integrationDetails(`<p>Happens on <a href="/join">the freelancer's page</a>: <code>POST /onboarding/sessions/</code>, the popup, then <code>GET /onboarding/sessions/{id}</code> until <code>can_be_paid</code>, and <code>GET /engagements/?search=…</code> for the engagement id.</p>
     ${f ? `<p class="facts">Freelancer <b>${esc(f.email)}</b> — session <code>${esc(f.session_id)}</code>, engagement <code>${esc(f.engagement_id ?? '(not yet)')}</code>${f.engagement_status ? ` ${stateTag(f.engagement_status)}` : ''}, can_be_paid <code>${esc(f.can_be_paid)}</code>, served by <code>${esc(f.servicing_company_slug ?? '?')}</code>.</p>` : ''}`)}
@@ -167,7 +171,7 @@ export function companyPage(input: CompanyPageInput): string {
   // with the current action.
   const panels = [
     keyPanel(input.key, input.state, steps[0], focus === 0),
-    onboardingPanel(input.state, steps[1], focus === 1),
+    onboardingPanel(input.state, input.publicUrl, steps[1], focus === 1),
     issuePanel(input.state, steps[2], focus === 2),
     payPanel(input.state, steps[3], focus === 3),
     eventsPanel(input.state, input.publicUrl, steps[4], focus === 4),

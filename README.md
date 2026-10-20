@@ -517,7 +517,10 @@ answered them. The engagement exists as soon as the link is opened, before the
 freelancer has consented to anything, so the back office counts the step done
 only once `can_be_paid` is true, from the status check or from an
 `engagement.onboarding.completed` for the session; until then the step reads
-**In progress**. The serving company decides which balance the company's
+**In progress**. While the freelancer cannot be paid yet, the back office makes
+the same status check each time it is opened (once the key is checked), so it
+catches up even when the join page was closed early and no webhook is
+connected. The serving company decides which balance the company's
 payment draws on in step 4.
 
 ![The freelancer's signup page before opening Abillio: why the connection is needed, three setup steps and the company's own form.](docs/join.jpg)

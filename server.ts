@@ -197,7 +197,55 @@ export function createApp(deps: Deps): Hono {
   // Liveness for the container orchestrator: no Abillio call, no state read.
   app.get('/healthz', c => c.text('ok'));
 
-  app.get('/', c => render(c));
+  // A status check: the session's answer and, once the link is opened, the
+  // engagement's row, and what they change of the stored freelancer. The join
+  // page's poll makes one every 3 s, and the back office one on load. Either
+  // read can fail (a 401, a network blip); each caller says what that means
+  // for its page.
+  async function checkStatus(f: NonNullable<State['freelancer']>) {
+    const status = await readSession(deps.api, f.session_id);
+    // Abillio knows the engagement from the moment the link is opened, still
+    // `invited`, and its status moves as the freelancer goes on (`active`
+    // once they can be paid), so from then on every check reads it too.
+    const engagement = status.state === 'awaiting_freelancer' ? null : await findEngagement(deps.api, f.email);
+    // Only what the answers change from what this check started with is
+    // written: a completion stored while the reads were out
+    // (recordCompletion) is newer than they are, and stays.
+    const learned: Partial<NonNullable<State['freelancer']>> = {};
+    if (status.can_be_paid !== f.can_be_paid) learned.can_be_paid = status.can_be_paid;
+    if (engagement && engagement.id !== f.engagement_id) learned.engagement_id = engagement.id;
+    if (engagement && engagement.status !== f.engagement_status) learned.engagement_status = engagement.status;
+    if (engagement && engagement.servicing_company_slug !== f.servicing_company_slug) learned.servicing_company_slug = engagement.servicing_company_slug;
+    if (Object.keys(learned).length) {
+      deps.state.update(s => {
+        // Only for the session this check read: a newer join replaced it.
+        if (!s.freelancer || s.freelancer.session_id !== f.session_id) return;
+        // Steps 3 and 4 belong to one engagement; another one starts them over.
+        if (learned.engagement_id && s.freelancer.engagement_id !== learned.engagement_id) { s.invoice = null; s.invoice_request = null; s.payout = null; }
+        Object.assign(s.freelancer, learned);
+      });
+    }
+    return { status, engagement };
+  }
+
+  // While the stored freelancer cannot be paid yet, every load makes that
+  // status check too: the join page's poll stores the answer only while the
+  // join page is open, and on a public URL with no webhook connected nothing
+  // else would. Only once the key is checked, as the page counts it
+  // (boundAccount). A failed read does not fail the page: it renders what is
+  // stored, and the trace shows the refused call.
+  app.get('/', async c => {
+    const s = deps.state.load();
+    const f = s.freelancer;
+    if (f?.can_be_paid === false && boundAccount(s)) {
+      try {
+        await checkStatus(f);
+      } catch {
+        // Nothing learned; the page below is what is stored.
+      }
+    }
+    return render(c);
+  });
 
   app.post('/steps/key', async c => {
     try {
@@ -253,28 +301,7 @@ export function createApp(deps: Deps): Hono {
     // a 502 with the error text, which the page's poll skips before asking
     // again on its next tick, instead of an unhandled 500.
     try {
-      const status = await readSession(deps.api, f.session_id);
-      // Abillio knows the engagement from the moment the link is opened, still
-      // `invited`, and its status moves as the freelancer goes on (`active`
-      // once they can be paid), so from then on every check reads it too.
-      const engagement = status.state === 'awaiting_freelancer' ? null : await findEngagement(deps.api, f.email);
-      // Only what the answers change from what this check started with is
-      // written: a completion stored while the reads were out
-      // (recordCompletion) is newer than they are, and stays.
-      const learned: Partial<NonNullable<State['freelancer']>> = {};
-      if (status.can_be_paid !== f.can_be_paid) learned.can_be_paid = status.can_be_paid;
-      if (engagement && engagement.id !== f.engagement_id) learned.engagement_id = engagement.id;
-      if (engagement && engagement.status !== f.engagement_status) learned.engagement_status = engagement.status;
-      if (engagement && engagement.servicing_company_slug !== f.servicing_company_slug) learned.servicing_company_slug = engagement.servicing_company_slug;
-      if (Object.keys(learned).length) {
-        deps.state.update(s => {
-          // Only for the session this poll read: a newer join replaced it.
-          if (!s.freelancer || s.freelancer.session_id !== f.session_id) return;
-          // Steps 3 and 4 belong to one engagement; another one starts them over.
-          if (learned.engagement_id && s.freelancer.engagement_id !== learned.engagement_id) { s.invoice = null; s.invoice_request = null; s.payout = null; }
-          Object.assign(s.freelancer, learned);
-        });
-      }
+      const { status, engagement } = await checkStatus(f);
       return c.json({ ...status, engagement_id: engagement?.id ?? f.engagement_id });
     } catch (err) {
       return c.text(joinErrorText(err), 502);
