@@ -1047,13 +1047,14 @@ test('a check stored under another key or ABILLIO_ACCOUNT reads as none: step 1 
     .flatMap(([, action, inner]) => [...inner.matchAll(/<button\b([^>]*)>/g)].map(b => ({ action, disabled: /\bdisabled\b/.test(b[1]) })));
   const render = async (account: State['account']) => {
     const { app } = appWith((async () => { throw new Error('a render calls nothing'); }) as Api, memoryState(walk(account)), 'https://x');
-    return { html: await (await app.request('/')).text(), state: (await (await app.request('/api/state')).json()) as State };
+    return { html: await (await app.request('/')).text(), join: await (await app.request('/join')).text(), state: (await (await app.request('/api/state')).json()) as State };
   };
   const checked = sandboxState().account!;
   for (const [label, swapped] of [['another key id', { ...checked, key_id: 'key_0' }], ['another ABILLIO_ACCOUNT', { ...checked, env_account: 'other-company' }]] as const) {
-    const { html, state } = await render(swapped);
+    const { html, join, state } = await render(swapped);
     assert.ok(!html.includes('Acting as'), `${label}: nobody is acting`);
     assert.equal(html.match(/<li class="step is-current">[\s\S]*?id="step-(\d)"/)?.[1], '1', `${label}: step 1 is up next`);
+    assert.match(join, /<span class="progress-track" aria-hidden="true"><span class="is-current">/, `${label}: on the join page's progress line too`);
     assert.equal(state.account, null, `${label}: nor does /api/state show the account`);
     const buttons = writeButtons(html);
     assert.deepEqual(new Set(buttons.map(b => b.action)), new Set(['/steps/issue', '/steps/pay/fund', '/steps/pay/pay', '/steps/pay/simulate', '/steps/events/connect', '/steps/events/test', '/reset']), `${label}: every write button is on the page`);

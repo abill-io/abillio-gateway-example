@@ -12,7 +12,7 @@ export function joinPage(state: State, abillioOrigin: string | null): string {
       <h1 id="join-title">Teach with Brightline Tutors</h1>
       <p class="lede">This is the partner's own sign-up page. The form posts to the partner's server, which mints an Abillio onboarding session; the browser only opens the link Abillio returns.</p>
       <p class="note">This demo is shared: what you type here is shown to everyone who opens it. Keep the made-up name and the @example.com address, and use test details in the popup.</p>
-      <form id="join" class="join-form" data-origin="${esc(abillioOrigin ?? '')}">
+      <form id="join" class="join-form" data-origin="${esc(abillioOrigin ?? '')}" data-session="${f ? 'stored' : ''}">
         <label>First name <input name="first_name" required value="Anna"></label>
         <label>Last name <input name="last_name" required value="Ozola"></label>
         <label class="wide">E-mail <input name="email" type="email" required value="${esc(`anna+${Date.now().toString(36)}@example.com`)}"></label>

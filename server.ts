@@ -206,7 +206,9 @@ export function createApp(deps: Deps): Hono {
     }
   });
 
-  app.get('/join', c => c.html(joinPage(deps.state.load(), deps.abillioOrigin())));
+  // The join page reads the state the way the back office does (publicState):
+  // its progress line counts the key check only for this process's key.
+  app.get('/join', c => c.html(joinPage(publicState(deps.state.load()), deps.abillioOrigin())));
 
   app.post('/join', async c => {
     const form = Object.fromEntries((await c.req.formData()).entries()) as Record<string, string>;

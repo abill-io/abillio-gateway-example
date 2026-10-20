@@ -46,6 +46,17 @@
     sayNote();
   };
 
+  // Polls until the session is complete, expired or payable (render stops it).
+  const follow = () => {
+    clearInterval(timer);
+    timer = setInterval(poll, 3000);
+    poll();
+  };
+  // A session already stored is followed from the start: the engagement is
+  // looked up only by this poll, so a page left before the link was opened
+  // would otherwise leave step 2 without one until the form is sent again.
+  if (form.dataset.session) follow();
+
   window.addEventListener('message', event => {
     if (!abillioOrigin || event.origin !== abillioOrigin) return;
     if (!event.data || event.data.source !== 'abillio') return;
@@ -74,8 +85,9 @@
     said = popup ? '' : `Popup blocked — open ${session.url} yourself.`;
     sayNote();
     if (popup) popup.location = session.url;
-    clearInterval(timer);
-    timer = setInterval(poll, 3000);
-    poll();
+    // Each press mints a new link, so Continue comes back: a freelancer who
+    // closed the popup half way presses it again and goes on where they stopped.
+    for (const b of form.querySelectorAll('button')) b.disabled = false;
+    follow();
   });
 })();

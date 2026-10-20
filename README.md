@@ -360,7 +360,8 @@ or the message is dropped (the page's own status poll still shows the outcome). 
 trusts the message only when `event.origin` is Abillio's (taken from the session
 url) and `data.source` is `"abillio"`.
 
-Meanwhile the page asks the server every three seconds, and the server asks
+Meanwhile the page asks the server every three seconds (from the moment it
+opens, when a session is already stored), and the server asks
 `GET /onboarding/sessions/{session_id}`. This is the last answer of the walk:
 
 ```json
