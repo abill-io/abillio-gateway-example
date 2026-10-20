@@ -1,11 +1,13 @@
 {
   "name": "abillio-gateway-example",
-  "version": "0.1.3",
+  "version": "0.1.4",
   "private": true,
   "description": "Clone-and-run sample of a company integrating Abillio: onboarding popup, invoice in the freelancer's name, wallet payment, payout, webhooks.",
   "license": "MIT",
   "type": "module",
-  "engines": { "node": ">=22.12" },
+  "engines": {
+    "node": ">=22.12"
+  },
   "scripts": {
     "start": "node --experimental-strip-types --disable-warning=ExperimentalWarning --env-file=.env server.ts",
     "test": "node --experimental-strip-types --disable-warning=ExperimentalWarning --test 'test/**/*.test.ts'",
