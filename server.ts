@@ -101,9 +101,10 @@ export function createApp(deps: Deps): Hono {
   // in the same write, happens only while the stored key is still the one
   // this call sent: a newer one, and what came with it, belong to another
   // press. `once` marks an action that is an event, not a state (a sandbox
-  // simulation): after any settled answer, a success too, its key is
-  // forgotten, so the next press plays it again; only an unknown outcome
-  // keeps it, so a blind retry replays.
+  // simulation, an onboarding mint whose single-use link may already be
+  // spent): after any settled answer, a success too, its key is forgotten,
+  // so the next press plays it again; only an unknown outcome keeps it, so a
+  // blind retry replays.
   async function keyed<T>(state: State, action: string, call: () => Promise<T>, opts: KeyedOptions = {}): Promise<T> {
     let claimed = '';
     deps.state.update(s => { claimed = state.idempotency[action] = s.idempotency[action] ??= randomUUID(); });
@@ -193,9 +194,12 @@ export function createApp(deps: Deps): Hono {
     const join: JoinForm = { first_name: form.first_name ?? '', last_name: form.last_name ?? '', email: form.email, tax_country: form.tax_country || 'LV', locale };
     const returnUrl = returnUrlFor(deps.publicUrl, deps.port);
     try {
-      // keyed() claims and keeps the key of this exact body (onboardingAction);
-      // startOnboarding derives the same action and sends that key.
-      const session = await keyed(state, onboardingAction(onboardingBody(join, returnUrl)), () => startOnboarding(deps.api, state, join, returnUrl));
+      // keyed() claims the key of this exact body (onboardingAction), and
+      // `once` spends it on any answer: the link is single-use and may be
+      // spent already, so each press mints a new one, and only a lost answer
+      // leaves the key for the identical retry to replay. startOnboarding
+      // derives the same action and sends that key.
+      const session = await keyed(state, onboardingAction(onboardingBody(join, returnUrl)), () => startOnboarding(deps.api, state, join, returnUrl), { once: true });
       // The same freelancer (the same address) keeps their engagement, and with
       // it steps 3 and 4. Another one's engagement is looked up by /join/status,
       // which starts those steps over once it finds a different one.

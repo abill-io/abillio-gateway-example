@@ -139,29 +139,34 @@ test('the join page rejects a malformed e-mail before calling Abillio', async ()
   assert.equal(called, false);
 });
 
-test('a resubmitted /join reuses the key after a success, a network failure or an idempotency-layer 409, bare or enveloped, and mints a new one after an enveloped refusal', async () => {
+test('a /join mint is spent once Abillio answers: after a success or a refusal the next press mints anew, while a lost answer or an idempotency-layer 409, bare or enveloped, keeps the key for the identical press to replay', async () => {
   const keys: (string | undefined)[] = [];
   const session = { session_id: 's1', url: 'https://new.abillio.dev/s/tok', status: 'awaiting_freelancer', purpose: 'onboarding' };
   const outcomes: (() => unknown)[] = [
     () => { throw new TypeError('fetch failed'); },
     () => { throw new AbillioError(409, { detail: 'A request with this idempotency key is still in progress.' }, ''); },
     () => { throw new AbillioError(409, { error: { code: 'idempotency_in_progress', message: 'A request with this idempotency key is still in progress' } }, ''); },
-    () => { throw new AbillioError(409, { error: { code: 'requirements_complete', message: 'Nothing left to complete.' } }, ''); },
     () => session,
+    () => ({ ...session, session_id: 's2', url: 'https://new.abillio.dev/s/tok2' }),
+    () => { throw new AbillioError(409, { error: { code: 'requirements_complete', message: 'Nothing left to complete.' } }, ''); },
     () => session,
   ];
   const api = (async (_m: string, _p: string, _b: unknown, opts?: { idempotencyKey?: string }) => {
     keys.push(opts?.idempotencyKey);
     return outcomes[keys.length - 1]();
   }) as Api;
-  const { app } = appWith(api, fileLikeState(sandboxState()));
+  const { app, state } = appWith(api, fileLikeState(sandboxState()));
   const press = async () => (await app.request('/join', { method: 'POST', body: new URLSearchParams({ first_name: 'Anna', last_name: 'Ozola', email: 'Anna@Example.com', tax_country: 'LV', locale: 'lv' }), headers: { 'content-type': 'application/x-www-form-urlencoded' } })).status;
-  assert.deepEqual([await press(), await press(), await press(), await press(), await press(), await press()], [502, 502, 502, 502, 200, 200]);
+  const statuses: number[] = [];
+  for (let i = 0; i < outcomes.length; i++) statuses.push(await press());
+  assert.deepEqual(statuses, [502, 502, 502, 200, 200, 502, 200]);
   assert.equal(keys[1], keys[0], 'a network failure leaves the outcome unknown: the next press reuses the key');
   assert.equal(keys[2], keys[1], 'so does a bare 409 from the idempotency layer: the key is held by an earlier request');
-  assert.equal(keys[3], keys[2], 'and the same answer in the envelope, as an idempotency_* code');
-  assert.notEqual(keys[4], keys[3], 'Abillio refused in its own envelope: the next press is a new attempt');
-  assert.equal(keys[5], keys[4], 'after a success a repeated press replays');
+  assert.equal(keys[3], keys[2], 'and the same answer in the envelope, as an idempotency_* code: the identical press replays the mint whose answer was lost');
+  assert.notEqual(keys[4], keys[3], 'the link is single-use and may already be spent: after a success the next press mints a new one');
+  assert.notEqual(keys[5], keys[4], 'every answered press spends its key');
+  assert.notEqual(keys[6], keys[5], 'Abillio refused in its own envelope (nothing left to complete): the next press is a new attempt');
+  assert.deepEqual(Object.keys(state.load().idempotency).filter(action => action.startsWith('onboard:')), [], 'no mint key outlives its answer');
 });
 
 test('/join writes back only its own key, so a key another press stored meanwhile survives', async () => {
@@ -177,19 +182,31 @@ test('/join writes back only its own key, so a key another press stored meanwhil
   assert.equal(state.load().idempotency['draft:e9'], 'another-press');
 });
 
-test('a changed /join form is a new attempt: the key follows the exact body, so only an identical retry replays', async () => {
+test('the /join key follows the exact body: a changed form never goes out under the key a lost mint holds, and the identical form replays it', async () => {
   const keys: string[] = [];
   const api = (async (_m: string, _p: string, _b: unknown, opts?: { idempotencyKey?: string }) => {
     keys.push(opts?.idempotencyKey ?? '');
+    // The first mint's answer is lost on the way back.
+    if (keys.length === 1) throw new TypeError('fetch failed');
     return { session_id: 's1', url: 'https://new.abillio.dev/s/tok', status: 'awaiting_freelancer', purpose: 'onboarding' };
   }) as Api;
   const { app } = appWith(api, fileLikeState(sandboxState()));
   const join = (locale: string) => app.request('/join', { method: 'POST', body: new URLSearchParams({ first_name: 'Anna', last_name: 'Ozola', email: 'anna@example.com', tax_country: 'LV', locale }), headers: { 'content-type': 'application/x-www-form-urlencoded' } });
   await join('lv');
-  await join('lv');
   await join('en');
-  assert.equal(keys[1], keys[0], 'the same form: the same body under the same key');
-  assert.notEqual(keys[2], keys[1], 'another locale: another body, so a new attempt with a new key');
+  await join('lv');
+  assert.notEqual(keys[1], keys[0], 'another locale: another body, so a new attempt with a new key');
+  assert.equal(keys[2], keys[0], 'the form of the lost mint: the same body under the key Abillio holds for it');
+});
+
+test("GET /join pre-fills a fresh made-up address on every load, never the stored freelancer's, whose session stays in the console", async () => {
+  const s = sandboxState();
+  s.freelancer = { email: 'last.visitor@example.com', session_id: 's1', session_url: 'https://new.abillio.dev/s/tok', engagement_id: 'e1', servicing_company_slug: 'abillio-ks' };
+  const { app } = appWith((async () => ({})) as Api, memoryState(s));
+  const html = await (await app.request('/join')).text();
+  const prefilled = /<input name="email" type="email" required value="([^"]*)">/.exec(html)?.[1];
+  assert.match(prefilled ?? '', /^anna\+[0-9a-z]+@example\.com$/, 'an untouched submit mints for a new made-up address');
+  assert.ok(/id="status">[\s\S]*last\.visitor@example\.com/.test(html), 'the stored session is still shown');
 });
 
 // --- Step 3 -------------------------------------------------------------------

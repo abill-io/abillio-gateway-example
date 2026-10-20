@@ -34,10 +34,13 @@ export function onboardingBody(form: JoinForm, returnUrl: string): OnboardingBod
 }
 
 // The action a mint is keyed on: the address plus a digest of the exact body.
-// Abillio holds a key to the body it first saw, and a different body under it
-// is a 409 for good; with the digest a changed form is a new attempt, and only
-// an identical retry replays. The route's keyed() and startOnboarding both
-// derive it here, so the key they claim and send cannot drift apart.
+// The route spends the key as soon as Abillio answers (`once`): the link is
+// single-use, so every answered press mints a new one, and only a mint whose
+// answer was lost keeps its key, for the identical retry to replay. Abillio
+// holds that key to the body it first saw, and a different body under it is a
+// 409 for good; with the digest a changed form is a new attempt instead. The
+// route's keyed() and startOnboarding both derive it here, so the key they
+// claim and send cannot drift apart.
 export function onboardingAction(body: OnboardingBody): string {
   const digest = createHash('sha256').update(JSON.stringify(body)).digest('hex').slice(0, 8);
   return `onboard:${body.email.toLowerCase()}:${digest}`;

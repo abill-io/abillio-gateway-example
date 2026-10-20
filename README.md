@@ -167,9 +167,13 @@ refused for good.
 A few actions deliberately take a fresh key on every press, because each press
 is meant to run again: the sandbox deposit, the test delivery, Start over, and
 the channel move in step 5 (a `PATCH` that sets a destination comes out the
-same however often it is sent). The payout simulation is an event rather than a
-state, so its key is spent on any settled answer, a success included: `paid`
-after `returned` plays again instead of replaying the first `paid`.
+same however often it is sent). Two more are events rather than states, so
+their key is spent on any settled answer, a success included, and only an
+unknown outcome keeps it for the identical retry: the payout simulation, so
+`paid` after `returned` plays again instead of replaying the first `paid`, and
+the onboarding mint, because its link is single-use and the one answered before
+may already have been opened, so every press of **Continue with Abillio** mints
+a new link.
 
 Two cases are worth knowing before you copy the pattern. The issue call is not
 atomic: after a 5xx Abillio keeps the claim, and a retry gets a 409,
@@ -263,10 +267,12 @@ the partner's site, and to learn the engagement that later steps act on
 [guide: gateway onboarding](https://backend.abillio.dev/company-api/#gateway)).
 The freelancer fills in the partner's own form on `/join`; the partner's server
 mints an onboarding session, and the browser only opens the link Abillio
-returns.
+returns. The form suggests a fresh made-up `anna+…@example.com` on every load,
+never the address of whoever joined before.
 
 `POST /onboarding/sessions/`, keyed on the address and a digest of the exact
-body:
+body, with the key spent as soon as Abillio answers (see
+[Idempotency](#idempotency-the-one-rule-every-step-follows)):
 
 ```json
 {
@@ -366,10 +372,13 @@ popup plays with a **Simulate payment** action.
 **What can go wrong.** A blocked popup: the page then says so and shows the
 link to open by hand. A malformed address is refused before Abillio is called,
 and an error from Abillio comes back to the page as its code and message. The
-link is single-use and valid for 24 hours; minting again for the same address
-gives a new link, and the same freelancer keeps their engagement. Changing
-anything in the form changes the body, so it is a new attempt under a new key;
-only an identical resubmit replays. A production account refuses an `http`
+link is single-use and valid for 24 hours, so each press mints a new one:
+minting again for the same address gives a new link on the same engagement,
+and the freelancer continues where they stopped. Only a mint whose answer was
+lost keeps its key, and pressing again with the identical form replays it; a
+changed form is a new attempt under a new key, since Abillio refuses a
+different body under a key it holds. An address with nothing left to complete
+answers `409 requirements_complete`. A production account refuses an `http`
 return URL with a 400.
 
 ## Step 3 — Issue an invoice in the freelancer's name

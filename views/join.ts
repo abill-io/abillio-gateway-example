@@ -14,7 +14,7 @@ export function joinPage(state: State, abillioOrigin: string | null): string {
       <form id="join" class="join-form" data-origin="${esc(abillioOrigin ?? '')}">
         <label>First name <input name="first_name" required value="Anna"></label>
         <label>Last name <input name="last_name" required value="Ozola"></label>
-        <label class="wide">E-mail <input name="email" type="email" required value="${esc(f?.email ?? `anna+${Date.now().toString(36)}@example.com`)}"></label>
+        <label class="wide">E-mail <input name="email" type="email" required value="${esc(`anna+${Date.now().toString(36)}@example.com`)}"></label>
         <label>Tax country <select name="tax_country"><option>LV</option><option>EE</option><option>LT</option><option>DE</option></select></label>
         <label>Language <select name="locale"><option value="lv">Latviešu</option><option value="en">English</option></select></label>
         <button class="wide">Continue with Abillio</button>
