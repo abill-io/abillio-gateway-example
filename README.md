@@ -6,6 +6,11 @@ their name, pays it from its wallet, the payout goes out, and webhooks tell the
 company what happened. Every call to Abillio is available under **Under the hood**.
 A hosted copy runs at https://demo.abillio.dev.
 
+**Building with an AI agent?** Use the included
+[`abillio-integration` skill](.agents/skills/abillio-integration/SKILL.md)
+for Codex or Claude Code.
+[See the commands and how to use it in your own project.](#build-your-integration-with-an-ai-agent)
+
 **Your Company** is a placeholder for your own brand. The pages illustrate how
 your company's website can connect freelancers to Abillio Gateway.
 
@@ -85,6 +90,37 @@ its response.
 The screenshots in this README were captured locally from the current views
 on 20 October 2026 using made-up demo data. They illustrate this working tree,
 not the release currently deployed at the hosted demo.
+
+## Build your integration with an AI agent
+
+This repository includes the project skill
+[`abillio-integration`](.agents/skills/abillio-integration/SKILL.md).
+It guides an agent through adapting the example to your application: server-side
+signing, freelancer onboarding, invoices, payments, webhooks, durable retries
+and verification. It uses the current API guide and schema for the contract,
+with this code as the worked example.
+
+In Codex, invoke it with:
+
+```text
+$abillio-integration Add Abillio freelancer onboarding and invoice payments to this project. Use its existing stack and start with the sandbox.
+```
+
+In Claude Code, use `/abillio-integration` with the same request. The
+`.claude/skills/abillio-integration` directory links to the same skill source
+in `.agents/skills`, so both agents read the same instructions. These project locations
+follow the [Codex skill documentation](https://developers.openai.com/codex/skills/)
+and [Claude Code skill documentation](https://code.claude.com/docs/en/skills).
+
+The root [`AGENTS.md`](AGENTS.md) directs integration work to this skill;
+[`CLAUDE.md`](CLAUDE.md) imports those same project instructions.
+
+To use it in another repository, copy the `abillio-integration` folder,
+including `references/`, into that agent's project skill directory. Keep a
+checkout of this example available or let the agent consult its linked source.
+The skill adapts the integration to your stack; it does not require Hono.
+Keep credentials in local server configuration. Live sandbox checks are
+separate from local implementation and tests.
 
 ## Run it
 
