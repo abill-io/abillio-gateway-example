@@ -437,6 +437,31 @@ test('a refusal forgets only the key its own call sent: a key and a request anot
   assert.deepEqual(state.load().invoice_request, theirs);
 });
 
+test("the issue route writes only onto the walk it acted on: an answer that comes back after another freelancer was found stores nothing on their walk, and the press goes no further", async () => {
+  // While a call is out, /join/status finds another freelancer and starts steps 3 and 4 over.
+  const moveOn = (s: State) => {
+    s.freelancer = { email: 'ben@example.com', session_id: 's2', session_url: 'https://new.abillio.dev/s/t2', engagement_id: 'e2', servicing_company_slug: 'abillio-ks' };
+    s.invoice = null; s.invoice_request = null; s.payout = null;
+  };
+  const cases = [
+    { during: 'the clients read', drafts: 0, issues: 0 },
+    { during: 'the draft', drafts: 1, issues: 0 },
+    { during: 'the issue', drafts: 1, issues: 1 },
+  ] as const;
+  for (const { during, drafts, issues } of cases) {
+    const store = fileLikeState(joinedState());
+    const abillio = fakeIssueApi(call => {
+      const isIt = during === 'the clients read' ? call.method === 'GET' : during === 'the draft' ? call.path === '/engagements/e1/invoices/' : call.path.endsWith('/issue');
+      if (isIt) store.update(moveOn);
+    });
+    const html = await (await pressIssue(appWith(abillio.api, store).app)).text();
+    const s = store.load();
+    assert.deepEqual({ invoice: s.invoice, invoice_request: s.invoice_request }, { invoice: null, invoice_request: null }, `${during}: nothing of e1's is stored on e2's walk`);
+    assert.ok(html.includes('The walk moved on while this press was out'), `${during}: and the page says why`);
+    assert.deepEqual([abillio.drafts().length, abillio.issues().length], [drafts, issues], `${during}: nothing more goes out for e1 once the walk has moved on`);
+  }
+});
+
 // --- Step 4 -------------------------------------------------------------------
 
 function pressSimulate(app: App, outcome: string) {

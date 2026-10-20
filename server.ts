@@ -259,6 +259,12 @@ export function createApp(deps: Deps): Hono {
     const state = deps.state.load();
     const engagementId = state.freelancer?.engagement_id;
     if (!engagementId || !state.account) return render(c, new Error('Join a freelancer first (step 2) and check the key (step 1).'));
+    // The walk this press acts on. A Start over, or another freelancer found
+    // by /join/status, can move it on while a call is out; from then on the
+    // press writes nothing and sends nothing more, since what it would store
+    // belongs to a walk that is no longer the page's.
+    const onThisWalk = (s: State) => s.freelancer?.engagement_id === engagementId;
+    const movedOn = () => render(c, new Error('The walk moved on while this press was out (a Start over, or another freelancer joined), so the press stopped there and stored nothing on the new walk.'));
     try {
       // What a press does follows from what is stored (`issueStage`), so an
       // engagement is drafted for once: with an invoice stored, a draft or an
@@ -277,22 +283,39 @@ export function createApp(deps: Deps): Hono {
         // one another press stored meanwhile, so the bytes under the key never
         // change with the day or the form.
         const fresh = invoiceRequest(engagementId, { description: form.description ?? '', unit_price: form.unit_price ?? '', currency_code: form.currency_code || 'EUR' }, new Date(deps.now()));
-        const request = deps.state.update(s => { s.invoice_request = s.invoice_request?.engagement_id === engagementId ? s.invoice_request : fresh; }).invoice_request ?? fresh;
+        let here = false;
+        const request = deps.state.update(s => {
+          if (!onThisWalk(s)) return;
+          here = true;
+          s.invoice_request = s.invoice_request?.engagement_id === engagementId ? s.invoice_request : fresh;
+        }).invoice_request ?? fresh;
+        if (!here) return movedOn();
         // On a certain refusal nothing was drafted, so the request goes with the
-        // key and the form is free again.
-        const drafted = await keyed(state, `draft:${request.engagement_id}`, () => draftInvoice(deps.api, state, request, self.id), { onRefused: s => { s.invoice_request = null; } });
+        // key and the form is free again (only this engagement's request).
+        const drafted = await keyed(state, `draft:${request.engagement_id}`, () => draftInvoice(deps.api, state, request, self.id), { onRefused: s => { if (s.invoice_request?.engagement_id === request.engagement_id) s.invoice_request = null; } });
         invoice = { id: drafted.id, number: drafted.number, status: drafted.status, public_url: drafted.public_url };
         const stored = invoice;
         // Another press may have stored this draft, and issued it, meanwhile.
-        deps.state.update(s => { s.invoice ??= stored; });
+        let still = false;
+        deps.state.update(s => {
+          if (!onThisWalk(s)) return;
+          still = true;
+          s.invoice ??= stored;
+        });
+        if (!still) return movedOn();
       }
       const id = invoice.id;
       const issued = await keyed(state, `issue:${id}`, () => issueInvoice(deps.api, state, engagementId, id));
-      // The answer replaces only the draft it issued. Past the draft a press
-      // just shows the replay: its answer is the first issue's, which can be
-      // older than what a later step stored.
-      deps.state.update(s => { if (s.invoice?.id === id && s.invoice.status === 'draft') s.invoice = { id, number: issued.number, status: issued.status, public_url: issued.public_url }; });
-      return render(c);
+      // The answer replaces only the draft it issued, on the walk it was
+      // issued for. Past the draft a press just shows the replay: its answer is
+      // the first issue's, which can be older than what a later step stored.
+      let issuedHere = false;
+      deps.state.update(s => {
+        if (!onThisWalk(s)) return;
+        issuedHere = true;
+        if (s.invoice?.id === id && s.invoice.status === 'draft') s.invoice = { id, number: issued.number, status: issued.status, public_url: issued.public_url };
+      });
+      return issuedHere ? render(c) : movedOn();
     } catch (err) {
       return render(c, err);
     }
