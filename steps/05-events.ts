@@ -106,6 +106,21 @@ export function aboutThisWalk(state: State, event: StoredEvent): boolean {
   return ours.some(([key, id]) => Boolean(id) && event.data[key] === id);
 }
 
+// An `engagement.onboarding.completed` for the stored session that says the
+// freelancer can be paid is step 2's answer, as the join page's status check
+// is. Both writers, the receiver and the poll, record it as they store the
+// event, so the back office learns it without the join page open. The
+// engagement's status read before it describes the engagement before the
+// completion (`invited`, not `active`), so it is dropped until a check reads
+// it again.
+export function recordCompletion(state: State, event: StoredEvent): void {
+  const f = state.freelancer;
+  if (!f || f.can_be_paid || event.event_type !== 'engagement.onboarding.completed') return;
+  if (event.data.session_id !== f.session_id || event.data.can_be_paid !== true) return;
+  f.can_be_paid = true;
+  f.engagement_status = null;
+}
+
 // The webhook's name for a payout's move, as the backend announces it: a
 // return (a paid or processing payout back at pending) is
 // `engagement.payout.failed` with status pending. A move no webhook announces
@@ -174,8 +189,9 @@ export async function pollForEvents(api: Api, state: State, now: () => number = 
 // route's guard on its draft, the same pattern. The rest of a row (the number
 // an issue stored) is the routes' to write. Events are appended once each by
 // their dedupe key (an event without one is never a copy, so it is always
-// appended), and the log keeps the newest EVENT_LIMIT. Answers what was
-// written, for the caller to say so (or not).
+// appended), and the log keeps the newest EVENT_LIMIT; a completion is
+// recorded as it is appended. Answers what was written, for the caller to say
+// so (or not).
 export function recordPoll(s: State, found: PollResult): PollResult {
   const written: PollResult = { events: [], changes: [] };
   for (const change of found.changes) {
@@ -187,6 +203,7 @@ export function recordPoll(s: State, found: PollResult): PollResult {
   for (const e of found.events) {
     if (!e.dedupe_key || !s.events.some(x => x.dedupe_key === e.dedupe_key)) {
       appendEvent(s, e);
+      recordCompletion(s, e);
       written.events.push(e);
     }
   }

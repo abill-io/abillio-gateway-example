@@ -43,7 +43,7 @@ export function onboardingPanel(state: State, status: StepStatus = stepStatuses(
   const f = state.freelancer;
   return `<section class="panel" id="step-2" aria-labelledby="step-2-title">${stepHead(2, 'Step 2 — The freelancer joins', status)}
     <p>Happens on <a href="/join">the freelancer's page</a>: <code>POST /onboarding/sessions/</code>, the popup, then <code>GET /onboarding/sessions/{id}</code> until <code>can_be_paid</code>, and <code>GET /engagements/?search=…</code> for the engagement id.</p>
-    ${f ? `<p class="facts">Freelancer <b>${esc(f.email)}</b> — session <code>${esc(f.session_id)}</code>, engagement <code>${esc(f.engagement_id ?? '(not yet)')}</code>, served by <code>${esc(f.servicing_company_slug ?? '?')}</code>.</p>` : '<p class="muted">Nobody has joined yet.</p>'}
+    ${f ? `<p class="facts">Freelancer <b>${esc(f.email)}</b> — session <code>${esc(f.session_id)}</code>, engagement <code>${esc(f.engagement_id ?? '(not yet)')}</code>${f.engagement_status ? ` ${stateTag(f.engagement_status)}` : ''}, can_be_paid <code>${esc(f.can_be_paid)}</code>, served by <code>${esc(f.servicing_company_slug ?? '?')}</code>.</p>` : '<p class="muted">Nobody has joined yet.</p>'}
   </section>`;
 }
 

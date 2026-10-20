@@ -44,7 +44,7 @@ test('connectWebhooks creates a channel with a 64-hex secret and a subscription;
 
 test('pollForEvents reports what changed since the stored state, named like the real events', async () => {
   const state = defaultState();
-  state.freelancer = { email: 'anna@example.com', session_id: 's1', session_url: 'https://new.abillio.dev/s/t', engagement_id: 'e1', servicing_company_slug: 'abillio-ks' };
+  state.freelancer = { email: 'anna@example.com', session_id: 's1', session_url: 'https://new.abillio.dev/s/t', engagement_id: 'e1', engagement_status: 'invited', can_be_paid: false, servicing_company_slug: 'abillio-ks' };
   state.invoice = { id: 'inv-1', number: 'A-1', status: 'approved', public_url: 'u' };
   state.payout = { id: 'p1', status: 'pending' };
   const api = (async (_m: string, path: string) => {
@@ -60,6 +60,7 @@ test('pollForEvents reports what changed since the stored state, named like the 
   assert.deepEqual(found.changes, [{ kind: 'invoice', id: 'inv-1', from: 'approved', to: 'paid' }, { kind: 'payout', id: 'p1', from: 'pending', to: 'paid' }]);
   assert.equal(state.invoice.status, 'approved', "the poll reports a change; writing it is the caller's");
   recordPoll(state, found);
+  assert.deepEqual({ can_be_paid: state.freelancer.can_be_paid, engagement_status: state.freelancer.engagement_status }, { can_be_paid: true, engagement_status: null }, "the session's completion is step 2's answer, and the engagement status read before it no longer holds");
   const again = await pollForEvents(api, state, clock);
   assert.deepEqual(again, { events: [], changes: [] }, 'nothing changed since the first poll was recorded, so nothing is reported');
 });
@@ -69,7 +70,7 @@ test('pollForEvents reports what changed since the stored state, named like the 
 // otherwise for a path.
 function polled(answers: Record<string, () => unknown> = {}) {
   const state = defaultState();
-  state.freelancer = { email: 'anna@example.com', session_id: 's1', session_url: 'https://new.abillio.dev/s/t', engagement_id: 'e1', servicing_company_slug: 'abillio-ks' };
+  state.freelancer = { email: 'anna@example.com', session_id: 's1', session_url: 'https://new.abillio.dev/s/t', engagement_id: 'e1', engagement_status: 'active', can_be_paid: true, servicing_company_slug: 'abillio-ks' };
   state.invoice = { id: 'inv-1', number: 'A-1', status: 'approved', public_url: 'u' };
   state.payout = { id: 'p1', status: 'pending' };
   const reads: Record<string, () => unknown> = {

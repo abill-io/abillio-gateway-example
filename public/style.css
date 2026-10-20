@@ -299,7 +299,8 @@ input, select, textarea {
 .progress-track { display: inline-flex; gap: 3px; }
 .progress-track > span { width: 16px; height: 6px; background: var(--line-strong); border-radius: 2px; }
 .progress-track > .is-done { background: var(--accent); }
-.progress-track > .is-current { background: var(--accent-tint); box-shadow: inset 0 0 0 1.5px var(--accent); }
+.progress-track > .is-current,
+.progress-track > .is-active { background: var(--accent-tint); box-shadow: inset 0 0 0 1.5px var(--accent); }
 
 .topnav { display: flex; flex-wrap: wrap; gap: 4px; }
 .topnav a {
@@ -378,7 +379,10 @@ main.one-col { width: min(720px, 100% - 2 * var(--gutter)); }
 }
 .step-marker svg { width: 16px; height: 16px; }
 .is-done > .step-marker { color: var(--on-accent); background: var(--accent); border-color: var(--accent); }
-.is-current > .step-marker { color: var(--accent-ink); background: var(--surface); border-color: var(--accent); box-shadow: var(--ring); }
+/* A step under way (step 2 while the freelancer onboards) wears the current
+   step's ring: started, not finished. */
+.is-current > .step-marker,
+.is-active > .step-marker { color: var(--accent-ink); background: var(--surface); border-color: var(--accent); box-shadow: var(--ring); }
 
 .panel {
   padding: 20px 24px 24px;
@@ -432,6 +436,8 @@ main.one-col { width: min(720px, 100% - 2 * var(--gutter)); }
 }
 .is-done .step-status { color: var(--accent-ink); background: var(--accent-tint); }
 .is-current .step-status { color: var(--on-accent); background: var(--accent); }
+/* Outlined, so the filled label stays with the one step that is up next. */
+.is-active .step-status { color: var(--accent-ink); box-shadow: inset 0 0 0 1.5px var(--accent); }
 
 .muted { color: var(--muted); }
 .panel p.muted { font-size: 0.9375rem; }

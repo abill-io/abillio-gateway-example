@@ -5,28 +5,32 @@ import { issueStage } from '../steps/03-issue.ts';
 import { aboutThisWalk } from '../steps/05-events.ts';
 import { esc } from './layout.ts';
 
-export type StepStatus = 'done' | 'current' | 'upcoming';
+export type StepStatus = 'done' | 'active' | 'current' | 'upcoming';
 
-// Where the walk stands, read off the stored state the way the panels gate
-// their buttons: the key check stored the account (1), the freelancer has an
-// engagement (2), the invoice is past its draft (3) and paid (4), and Abillio
-// has told us something about this walk, by webhook or poll (5): what a reset
-// sends about its demo freelancers, or a test delivery, does not count. The
-// first step not done is the current one; a later step can be done before it
-// (events come in while the freelancer onboards).
+// Where the walk stands, read off the stored state: the key check stored the
+// account (1), Abillio says the freelancer can be paid (2), the invoice is past
+// its draft (3) and paid (4), and Abillio has told us something about this
+// walk, by webhook or poll (5): what a reset sends about its demo freelancers,
+// or a test delivery, does not count. Step 2 is under way from the join until
+// then, since the engagement exists as soon as the link is opened, before any
+// consent. The first step neither done nor under way is the current one: while
+// the freelancer onboards, step 3 is up next (a 409 there lists what they
+// still owe). A later step can be done before an earlier one (events come in
+// while the freelancer onboards).
 export function stepStatuses(state: State): StepStatus[] {
   const done = [
     Boolean(state.account),
-    Boolean(state.freelancer?.engagement_id),
+    state.freelancer?.can_be_paid === true,
     issueStage(state) === 'issued',
     state.invoice?.status === 'paid',
     state.events.some(e => aboutThisWalk(state, e)),
   ];
-  const current = done.indexOf(false);
-  return done.map((d, i) => (d ? 'done' : i === current ? 'current' : 'upcoming'));
+  const underWay = (i: number) => i === 1 && Boolean(state.freelancer) && !done[1];
+  const current = done.findIndex((d, i) => !d && !underWay(i));
+  return done.map((d, i) => (d ? 'done' : underWay(i) ? 'active' : i === current ? 'current' : 'upcoming'));
 }
 
-const STATUS_LABEL: Record<StepStatus, string> = { done: 'Done', current: 'Up next', upcoming: 'Not yet' };
+const STATUS_LABEL: Record<StepStatus, string> = { done: 'Done', active: 'In progress', current: 'Up next', upcoming: 'Not yet' };
 
 // A step panel's head: its title, and where it stands in words, so the status
 // does not rest on the rail marker's colour alone.
@@ -34,7 +38,7 @@ export function stepHead(n: number, title: string, status: StepStatus): string {
   return `<div class="step-head"><h2 id="step-${esc(n)}-title">${esc(title)}</h2><span class="step-status">${esc(STATUS_LABEL[status])}</span></div>`;
 }
 
-const OK = new Set(['available', 'paid', 'complete', 'completed']);
+const OK = new Set(['available', 'active', 'paid', 'complete', 'completed']);
 const BAD = new Set(['forbidden', 'unavailable', 'rejected', 'returned', 'failed', 'cancelled', 'canceled', 'expired', 'overdue']);
 
 // A state or status Abillio answered, as a tag: what went through reads in
@@ -47,7 +51,8 @@ export function stateTag(value: string): string {
 const CHECK = '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M3.5 8.5l3 3 6-7" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>';
 
 // The numbered rail the five panels hang on: each step's marker (its number,
-// a check once done) on one line, so the order and the progress read at a glance.
+// a check once done) on one line, so the order and the progress read at a
+// glance. A step under way keeps its number.
 export function rail(statuses: StepStatus[], panels: string[]): string {
   return `<ol class="rail">${panels.map((panel, i) => `<li class="step is-${esc(statuses[i])}"><span class="step-marker" aria-hidden="true">${statuses[i] === 'done' ? CHECK : esc(i + 1)}</span>${panel}</li>`).join('')}</ol>`;
 }

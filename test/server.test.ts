@@ -33,9 +33,17 @@ test('GET /healthz answers ok without touching Abillio or the state', async () =
 });
 
 test('the progress line and the rail read where the walk stands off the stored state', async () => {
+  // Joined, and Abillio says the freelancer can be paid.
   const joined = (): State => {
     const s = sandboxState();
-    s.freelancer = { email: 'anna@example.com', session_id: 's1', session_url: 'https://new.abillio.dev/s/tok', engagement_id: 'e1', servicing_company_slug: 'abillio-ks' };
+    s.freelancer = { email: 'anna@example.com', session_id: 's1', session_url: 'https://new.abillio.dev/s/tok', engagement_id: 'e1', engagement_status: 'active', can_be_paid: true, servicing_company_slug: 'abillio-ks' };
+    return s;
+  };
+  // The link was opened, so Abillio knows the engagement, but the freelancer
+  // has consented to nothing yet: what the owner met on the hosted copy.
+  const invited = (): State => {
+    const s = joined();
+    s.freelancer = { ...s.freelancer!, engagement_status: 'invited', can_be_paid: false };
     return s;
   };
   const invoice = (status: string) => ({ id: 'inv-1', number: 'DEMO-1', status, public_url: 'https://new.abillio.dev/invoice/x' });
@@ -43,17 +51,25 @@ test('the progress line and the rail read where the walk stands off the stored s
   // What a reset sends about Abillio's demo freelancers (guide §13): a real
   // event, about an engagement this walk never had.
   const demo = { received_at: '2026-10-19T10:00:00.000Z', event_type: 'engagement.invoice.paid', data: { engagement_id: 'e-demo', invoice_uuid: 'inv-demo' }, via: 'webhook' as const, dedupe_key: 'd' };
-  const cases: { label: string; state: State; done: number; current: number | null }[] = [
-    { label: 'nothing stored', state: defaultState(), done: 0, current: 1 },
-    { label: 'a draft is not an issued invoice', state: Object.assign(joined(), { invoice: invoice('draft') }), done: 2, current: 3 },
-    { label: 'an event heard before the invoice leaves the current step where it is', state: Object.assign(joined(), { events: [event] }), done: 3, current: 3 },
-    { label: 'paid, and heard from Abillio: the walk is done', state: Object.assign(joined(), { invoice: invoice('paid'), events: [event] }), done: 5, current: null },
-    { label: 'an event about another walk is not step 5', state: Object.assign(joined(), { invoice: invoice('paid'), events: [demo] }), done: 4, current: 5 },
+  const cases: { label: string; state: State; done: number; current: number | null; step2: string; facts?: string }[] = [
+    { label: 'nothing stored', state: defaultState(), done: 0, current: 1, step2: 'Not yet' },
+    {
+      label: 'an engagement Abillio cannot pay yet is a step under way, not one done, and says so; step 3 is up next',
+      state: invited(), done: 1, current: 3, step2: 'In progress',
+      facts: 'engagement <code>e1</code> <code class="state is-neutral">invited</code>, can_be_paid <code>false</code>,',
+    },
+    { label: 'once Abillio says the freelancer can be paid, step 2 is done', state: joined(), done: 2, current: 3, step2: 'Done', facts: 'engagement <code>e1</code> <code class="state is-ok">active</code>, can_be_paid <code>true</code>,' },
+    { label: 'a draft is not an issued invoice', state: Object.assign(joined(), { invoice: invoice('draft') }), done: 2, current: 3, step2: 'Done' },
+    { label: 'an event heard before the invoice leaves the current step where it is', state: Object.assign(joined(), { events: [event] }), done: 3, current: 3, step2: 'Done' },
+    { label: 'paid, and heard from Abillio: the walk is done', state: Object.assign(joined(), { invoice: invoice('paid'), events: [event] }), done: 5, current: null, step2: 'Done' },
+    { label: 'an event about another walk is not step 5', state: Object.assign(joined(), { invoice: invoice('paid'), events: [demo] }), done: 4, current: 5, step2: 'Done' },
   ];
-  for (const { label, state, done, current } of cases) {
+  for (const { label, state, done, current, step2, facts } of cases) {
     const html = await (await appWith((async () => ({})) as Api, memoryState(state)).app.request('/')).text();
     assert.ok(html.includes(`${done} of 5 steps done`), label);
     assert.equal(html.match(/<li class="step is-current">[\s\S]*?id="step-(\d)"/)?.[1] ?? null, current === null ? null : String(current), label);
+    assert.equal(html.match(/id="step-2-title">[^<]*<\/h2><span class="step-status">([^<]*)</)?.[1], step2, label);
+    if (facts) assert.ok(html.includes(facts), `${label}: step 2 says what Abillio said`);
   }
 });
 
@@ -106,7 +122,7 @@ test("GET /api/state returns the stored state as JSON, without the webhook secre
   withSecret.account = sandboxState().account;
   // The link is the freelancer's bearer credential, spent on its first open (guide §9).
   const token = 't'.repeat(40) + 'wxyz';
-  withSecret.freelancer = { email: 'anna@example.com', session_id: 's1', session_url: `https://new.abillio.dev/s/${token}`, engagement_id: null, servicing_company_slug: null };
+  withSecret.freelancer = { email: 'anna@example.com', session_id: 's1', session_url: `https://new.abillio.dev/s/${token}`, engagement_id: null, engagement_status: null, can_be_paid: false, servicing_company_slug: null };
   const { app: app2 } = appWith((async () => ({})) as Api, memoryState(withSecret));
   const body = await (await app2.request('/api/state')).text();
   assert.ok(!body.includes('a'.repeat(60)), 'the secret never leaves the server');
@@ -121,10 +137,13 @@ test("GET /api/state returns the stored state as JSON, without the webhook secre
 });
 
 test('the join page opens the popup from the session url and polls the status', async () => {
+  // Abillio's answers move as the freelancer goes on: the engagement is
+  // `invited` from the moment the link is opened, `active` once they can be paid.
+  let payable = false;
   const api = (async (method: string, path: string) => {
     if (method === 'POST' && path === '/onboarding/sessions/') return { session_id: 's1', url: 'https://new.abillio.dev/s/tok', status: 'awaiting_freelancer', purpose: 'onboarding' };
-    if (path === '/onboarding/sessions/s1') return { state: 'in_progress', can_be_paid: false, purpose: 'onboarding', requirements: [{ key: 'kyc', state: 'in_progress' }] };
-    if (path.startsWith('/engagements/?search=')) return { count: 1, items: [{ id: 'e1', status: 'invited', counterparty: { email: 'anna@example.com', servicing_company: { slug: 'abillio-ks' } }, compliance: { can_be_paid: false } }] };
+    if (path === '/onboarding/sessions/s1') return payable ? { state: 'complete', can_be_paid: true, purpose: 'onboarding', requirements: [] } : { state: 'in_progress', can_be_paid: false, purpose: 'onboarding', requirements: [{ key: 'kyc', state: 'in_progress' }] };
+    if (path.startsWith('/engagements/?search=')) return { count: 1, items: [{ id: 'e1', status: payable ? 'active' : 'invited', counterparty: { email: 'anna@example.com', servicing_company: { slug: 'abillio-ks' } }, compliance: { can_be_paid: payable } }] };
     throw new Error(`${method} ${path}`);
   }) as Api;
   const { app, state } = appWith(api, memoryState(sandboxState()));
@@ -133,11 +152,19 @@ test('the join page opens the popup from the session url and polls the status', 
   assert.equal(created.status, 200);
   assert.deepEqual(await created.json(), { session_id: 's1', url: 'https://new.abillio.dev/s/tok', origin: 'https://new.abillio.dev' });
   assert.equal(state.load().freelancer?.session_id, 's1');
+  const said = () => {
+    const f = state.load().freelancer;
+    return { engagement_id: f?.engagement_id, engagement_status: f?.engagement_status, can_be_paid: f?.can_be_paid };
+  };
+  assert.deepEqual(said(), { engagement_id: null, engagement_status: null, can_be_paid: false }, 'a new session: Abillio has said nothing about it yet');
   const status = await app.request('/join/status');
   const body = await status.json();
   assert.equal(body.state, 'in_progress');
   assert.equal(body.engagement_id, 'e1');
-  assert.equal(state.load().freelancer?.engagement_id, 'e1');
+  assert.deepEqual(said(), { engagement_id: 'e1', engagement_status: 'invited', can_be_paid: false }, 'the link is opened: an engagement, not yet one that can be paid');
+  payable = true;
+  await app.request('/join/status');
+  assert.deepEqual(said(), { engagement_id: 'e1', engagement_status: 'active', can_be_paid: true }, 'each check stores what Abillio says now');
   const back = await app.request('/back');
   assert.ok((await back.text()).includes('close this window'));
 });
@@ -212,7 +239,7 @@ test('the /join key follows the exact body: a changed form never goes out under 
 
 test("GET /join pre-fills a fresh made-up address on every load, never the stored freelancer's, whose session stays in the console", async () => {
   const s = sandboxState();
-  s.freelancer = { email: 'last.visitor@example.com', session_id: 's1', session_url: 'https://new.abillio.dev/s/tok', engagement_id: 'e1', servicing_company_slug: 'abillio-ks' };
+  s.freelancer = { email: 'last.visitor@example.com', session_id: 's1', session_url: 'https://new.abillio.dev/s/tok', engagement_id: 'e1', engagement_status: 'active', can_be_paid: true, servicing_company_slug: 'abillio-ks' };
   const { app } = appWith((async () => ({})) as Api, memoryState(s));
   const html = await (await app.request('/join')).text();
   const prefilled = /<input name="email" type="email" required value="([^"]*)">/.exec(html)?.[1];
@@ -225,10 +252,11 @@ test("GET /join pre-fills a fresh made-up address on every load, never the store
 type App = ReturnType<typeof appWith>['app'];
 type Call = { method: string; path: string; body: unknown; key: string };
 
-// A freelancer who joined (engagement e1) on account a1: what the issue route needs.
+// A freelancer who joined (engagement e1, which Abillio can pay) on account a1:
+// what the issue route needs.
 function joinedState(): State {
   const s = sandboxState();
-  s.freelancer = { email: 'anna@example.com', session_id: 's1', session_url: 'https://new.abillio.dev/s/t', engagement_id: 'e1', servicing_company_slug: 'abillio-ks' };
+  s.freelancer = { email: 'anna@example.com', session_id: 's1', session_url: 'https://new.abillio.dev/s/t', engagement_id: 'e1', engagement_status: 'active', can_be_paid: true, servicing_company_slug: 'abillio-ks' };
   return s;
 }
 
@@ -276,6 +304,7 @@ test('re-joining with the same e-mail keeps steps 3 and 4; a different engagemen
       return { session_id: id, url: `https://new.abillio.dev/s/${id}`, status: 'awaiting_freelancer', purpose: 'onboarding' };
     }
     if (method === 'GET' && path.startsWith('/onboarding/sessions/')) return { state: 'in_progress', can_be_paid: false, purpose: 'onboarding', requirements: [] };
+    if (method === 'GET' && path === '/engagements/?search=Anna%40Example.com') return { count: 1, items: [{ id: 'e1', status: 'active', counterparty: { email: 'anna@example.com', servicing_company: { slug: 'abillio-ks' } }, compliance: { can_be_paid: true } }] };
     if (method === 'GET' && path === '/engagements/?search=ben%40example.com') return { count: 1, items: [{ id: 'e2', status: 'invited', counterparty: { email: 'ben@example.com', servicing_company: { slug: 'abillio-ks' } }, compliance: { can_be_paid: false } }] };
     throw new Error(`unexpected ${method} ${path}`);
   }) as Api;
@@ -446,7 +475,7 @@ test('a refusal forgets only the key its own call sent: a key and a request anot
 test("the issue route writes only onto the walk it acted on: an answer that comes back after another freelancer was found stores nothing on their walk, and the press goes no further", async () => {
   // While a call is out, /join/status finds another freelancer and starts steps 3 and 4 over.
   const moveOn = (s: State) => {
-    s.freelancer = { email: 'ben@example.com', session_id: 's2', session_url: 'https://new.abillio.dev/s/t2', engagement_id: 'e2', servicing_company_slug: 'abillio-ks' };
+    s.freelancer = { email: 'ben@example.com', session_id: 's2', session_url: 'https://new.abillio.dev/s/t2', engagement_id: 'e2', engagement_status: 'invited', can_be_paid: false, servicing_company_slug: 'abillio-ks' };
     s.invoice = null; s.invoice_request = null; s.payout = null;
   };
   const cases = [
@@ -495,7 +524,7 @@ test('the pay routes fund, pay and settle, storing the payout', async () => {
   }) as Api;
   const initial = sandboxState();
   // Served by the Estonian company, not the default one: the deposit has to land on the freelancer's.
-  initial.freelancer = { email: 'anna@example.com', session_id: 's1', session_url: 'https://new.abillio.dev/s/t', engagement_id: 'e1', servicing_company_slug: 'abillio-services-ou' };
+  initial.freelancer = { email: 'anna@example.com', session_id: 's1', session_url: 'https://new.abillio.dev/s/t', engagement_id: 'e1', engagement_status: 'active', can_be_paid: true, servicing_company_slug: 'abillio-services-ou' };
   initial.invoice = { id: 'inv-1', number: 'A-1', status: 'approved', public_url: 'u' };
   const { app, state } = appWith(api, memoryState(initial));
   const fund = () => app.request('/steps/pay/fund', { method: 'POST', body: new URLSearchParams({ amount: '250.00' }), headers: { 'content-type': 'application/x-www-form-urlencoded' } });
@@ -673,6 +702,41 @@ test("an event about another walk (a reset's demo freelancers) is stored but not
   assert.deepEqual(told, ['refresh', 'refresh'], 'so does a test delivery, which a button asked for');
   const html = await (await app.request('/')).text();
   assert.equal(html.match(/>not this walk</g)?.length, 2, 'the log tags the demo event and the test delivery: neither is about this walk');
+});
+
+test('a completion heard by webhook makes step 2 done without the join page open, and a status check whose reads were out meanwhile does not set it back', async () => {
+  const v = JSON.parse(readFileSync(new URL('./vectors.json', import.meta.url), 'utf8')).webhook;
+  // The link is opened (Abillio knows the engagement) and the freelancer is in the popup.
+  const initial = joinedState();
+  initial.freelancer = { ...initial.freelancer!, engagement_status: 'invited', can_be_paid: false };
+  initial.webhook = { channel_id: 'ch1', subscription_id: 'sub1', secret: v.secret, url: 'https://x/webhooks/abillio' };
+  let completed = false;
+  let meanwhile = async () => {};
+  const api = (async (_m: string, path: string) => {
+    if (path === '/onboarding/sessions/s1') {
+      const answer = { state: completed ? 'complete' : 'in_progress', can_be_paid: completed, purpose: 'onboarding', requirements: [] };
+      await meanwhile();
+      return answer;
+    }
+    if (path === '/engagements/?search=anna%40example.com') return { count: 1, items: [{ id: 'e1', status: completed ? 'active' : 'invited', counterparty: { email: 'anna@example.com', servicing_company: { slug: 'abillio-ks' } }, compliance: { can_be_paid: completed } }] };
+    throw new Error(path);
+  }) as Api;
+  // fileLikeState: the status check holds its own copy of what it started from, as with state.json.
+  const { app } = appWith(api, fileLikeState(initial), 'https://x', () => {}, () => Number(v.timestamp) * 1000 + 1000);
+  // What Abillio sends for a link that has done its job (onboarding_payload).
+  const deliver = (session_id: string, engagement_id: string) => {
+    const raw = JSON.stringify({ event: 'engagement.onboarding.completed', timestamp: '2026-10-20T10:00:00.000000Z', account_id: 'a1', account_name: 'Acme', data: { session_id, freelancer_account_id: 'f1', freelancer_name: 'Anna Ozola', engagement_id, purpose: 'onboarding', can_be_paid: true } });
+    const v1 = createHmac('sha256', v.secret).update(`${v.timestamp}.`).update(raw).digest('hex');
+    return app.request('/webhooks/abillio', { method: 'POST', body: raw, headers: { 'content-type': 'application/json', 'x-timestamp': v.timestamp, 'x-signature': `t=${v.timestamp},v1=${v1}` } });
+  };
+  const step2 = async () => (await (await app.request('/')).text()).match(/id="step-2-title">[^<]*<\/h2><span class="step-status">([^<]*)</)?.[1];
+  await deliver('s0', 'e0');
+  assert.equal(await step2(), 'In progress', "another link's completion says nothing about this session");
+  // This session completes while a status check is out: the session answer
+  // it holds was read before the completion, the engagement row after it.
+  meanwhile = async () => { meanwhile = async () => {}; completed = true; assert.equal((await deliver('s1', 'e1')).status, 200); };
+  assert.equal((await app.request('/join/status')).status, 200);
+  assert.equal(await step2(), 'Done', 'the completion is the answer, and the status check read before it does not set it back');
 });
 
 // A receiver for a walk holding inv-1, and deliveries signed with the vector's secret.

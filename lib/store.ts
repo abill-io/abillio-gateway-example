@@ -33,11 +33,19 @@ export type State = {
   // the key and the ABILLIO_ACCOUNT the check was made with, since the answer
   // is about them: with either changed in .env, it no longer counts.
   account: { id: string; name: string; slug: string; is_sandbox: boolean; key_id: string; env_account: string } | null;
+  // What Abillio said about the freelancer. The engagement is known from the
+  // moment the link is opened, before the freelancer has consented to
+  // anything, so its id alone says nothing about step 2: `can_be_paid` (the
+  // stored session's answer, or its completion event) is what does.
+  // `engagement_status` is the engagement row's status as last read (null
+  // until a read, or once a completion has made the last one stale).
   freelancer: {
     email: string;
     session_id: string;
     session_url: string;
     engagement_id: string | null;
+    engagement_status: string | null;
+    can_be_paid: boolean;
     servicing_company_slug: string | null;
   } | null;
   invoice: { id: string; number: string; status: string; public_url: string } | null;
@@ -63,11 +71,17 @@ export function defaultState(): State {
 export function loadState(file: string = DEFAULT_FILE): State {
   if (!existsSync(file)) return defaultState();
   const raw = readFileSync(file, 'utf8');
+  let state: State;
   try {
-    return { ...defaultState(), ...(JSON.parse(raw) as Partial<State>) };
+    state = { ...defaultState(), ...(JSON.parse(raw) as Partial<State>) };
   } catch {
     throw new Error(`${file}: state.json is not valid JSON — fix it or delete it to start over.`);
   }
+  // A freelancer stored before step 2 kept what Abillio said (0.1.2 and
+  // earlier) reads as one it has said nothing about yet.
+  const f = state.freelancer;
+  if (f) state.freelancer = { ...f, engagement_status: f.engagement_status ?? null, can_be_paid: f.can_be_paid ?? false };
+  return state;
 }
 
 export function saveState(state: State, file: string = DEFAULT_FILE): void {

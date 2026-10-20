@@ -407,8 +407,13 @@ moment of the first lookup:
 ```
 
 The step writes `freelancer: { email, session_id, session_url, engagement_id,
-servicing_company_slug }`. The serving company decides which balance the
-company's payment draws on in step 4.
+engagement_status, can_be_paid, servicing_company_slug }`, as Abillio last
+answered them. The engagement exists as soon as the link is opened, before the
+freelancer has consented to anything, so the back office counts the step done
+only once `can_be_paid` is true, from the status check or from an
+`engagement.onboarding.completed` for the session; until then the step reads
+**In progress**. The serving company decides which balance the company's
+payment draws on in step 4.
 
 ![Brightline Tutors' sign-up page after the popup closed: the form on the left, the session status Abillio reports on the right](docs/join.png)
 

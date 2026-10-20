@@ -17,7 +17,7 @@ import { checkKey, type KeyReport } from './steps/01-key.ts';
 import { findEngagement, onboardingAction, onboardingBody, readSession, returnUrlFor, startOnboarding, type JoinForm } from './steps/02-onboard.ts';
 import { draftInvoice, findSelfClient, invoiceRequest, issueInvoice, pendingRequest } from './steps/03-issue.ts';
 import { DEFAULT_COMPANY, PAYOUT_OUTCOMES, findPayout, fundWallet, payAction, payInvoice, readInvoice, readPayout, simulateAction, simulatePayout } from './steps/04-pay.ts';
-import { WEBHOOK_ACTIONS, aboutThisWalk, connectWebhooks, pollForEvents, recordPoll, sendTestDelivery, type PollResult } from './steps/05-events.ts';
+import { WEBHOOK_ACTIONS, aboutThisWalk, connectWebhooks, pollForEvents, recordCompletion, recordPoll, sendTestDelivery, type PollResult } from './steps/05-events.ts';
 import { companyPage } from './views/company.ts';
 import { joinPage } from './views/join.ts';
 import { page } from './views/layout.ts';
@@ -226,10 +226,11 @@ export function createApp(deps: Deps): Hono {
       const session = await keyed(state, onboardingAction(onboardingBody(join, returnUrl)), () => startOnboarding(deps.api, state, join, returnUrl), { once: true });
       // The same freelancer (the same address) keeps their engagement, and with
       // it steps 3 and 4. Another one's engagement is looked up by /join/status,
-      // which starts those steps over once it finds a different one.
+      // which starts those steps over once it finds a different one. Whether
+      // the freelancer can be paid is the new session's to say.
       deps.state.update(s => {
         const previous = s.freelancer?.email.toLowerCase() === form.email.toLowerCase() ? s.freelancer : null;
-        s.freelancer = { email: form.email, session_id: session.session_id, session_url: session.url, engagement_id: previous?.engagement_id ?? null, servicing_company_slug: previous?.servicing_company_slug ?? null };
+        s.freelancer = { email: form.email, session_id: session.session_id, session_url: session.url, engagement_id: previous?.engagement_id ?? null, engagement_status: previous?.engagement_status ?? null, can_be_paid: false, servicing_company_slug: previous?.servicing_company_slug ?? null };
       });
       return c.json(session);
     } catch (err) {
@@ -245,22 +246,28 @@ export function createApp(deps: Deps): Hono {
     // again on its next tick, instead of an unhandled 500.
     try {
       const status = await readSession(deps.api, f.session_id);
-      let engagementId = f.engagement_id;
-      if (status.state !== 'awaiting_freelancer' && !engagementId) {
-        const engagement = await findEngagement(deps.api, f.email);
-        if (engagement) {
-          engagementId = engagement.id;
-          deps.state.update(s => {
-            // Only for the session this poll read: a newer join replaced it.
-            if (!s.freelancer || s.freelancer.session_id !== f.session_id) return;
-            // Steps 3 and 4 belong to one engagement; another one starts them over.
-            if (s.freelancer.engagement_id !== engagement.id) { s.invoice = null; s.invoice_request = null; s.payout = null; }
-            s.freelancer.engagement_id = engagement.id;
-            s.freelancer.servicing_company_slug = engagement.servicing_company_slug;
-          });
-        }
+      // Abillio knows the engagement from the moment the link is opened, still
+      // `invited`, and its status moves as the freelancer goes on (`active`
+      // once they can be paid), so from then on every check reads it too.
+      const engagement = status.state === 'awaiting_freelancer' ? null : await findEngagement(deps.api, f.email);
+      // Only what the answers change from what this check started with is
+      // written: a completion stored while the reads were out
+      // (recordCompletion) is newer than they are, and stays.
+      const learned: Partial<NonNullable<State['freelancer']>> = {};
+      if (status.can_be_paid !== f.can_be_paid) learned.can_be_paid = status.can_be_paid;
+      if (engagement && engagement.id !== f.engagement_id) learned.engagement_id = engagement.id;
+      if (engagement && engagement.status !== f.engagement_status) learned.engagement_status = engagement.status;
+      if (engagement && engagement.servicing_company_slug !== f.servicing_company_slug) learned.servicing_company_slug = engagement.servicing_company_slug;
+      if (Object.keys(learned).length) {
+        deps.state.update(s => {
+          // Only for the session this poll read: a newer join replaced it.
+          if (!s.freelancer || s.freelancer.session_id !== f.session_id) return;
+          // Steps 3 and 4 belong to one engagement; another one starts them over.
+          if (learned.engagement_id && s.freelancer.engagement_id !== learned.engagement_id) { s.invoice = null; s.invoice_request = null; s.payout = null; }
+          Object.assign(s.freelancer, learned);
+        });
       }
-      return c.json({ ...status, engagement_id: engagementId });
+      return c.json({ ...status, engagement_id: engagement?.id ?? f.engagement_id });
     } catch (err) {
       return c.text(joinErrorText(err), 502);
     }
@@ -415,12 +422,14 @@ export function createApp(deps: Deps): Hono {
     // new one on purpose, so it is never deduped. Real events carry their
     // emission time inside the body, so distinct emissions never collide.
     // Decided inside the write, against what is stored by then: two copies
-    // that arrive together are stored once, and the page is told once.
+    // that arrive together are stored once, and the page is told once. A
+    // completion is recorded with its event (recordCompletion).
     const event: StoredEvent = { received_at: new Date(deps.now()).toISOString(), event_type: delivery.event_type, data: delivery.data, via: 'webhook', dedupe_key: key };
     let stored = false;
     const after = deps.state.update(s => {
       if (delivery.event_type !== 'channel.test' && s.events.some(e => e.dedupe_key === key)) return;
       appendEvent(s, event);
+      recordCompletion(s, event);
       stored = true;
     });
     if (stored && announced(after, event)) notifyStored();
