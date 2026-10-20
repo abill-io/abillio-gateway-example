@@ -113,7 +113,7 @@ export function eventsPanel(state: State, publicUrl: string | null, status: Step
   // A log, newest first: one line per event, the newest one opened. An event
   // that names nothing of this walk (a reset's demo freelancers, a walk left
   // behind, a test delivery) says so: step 5 does not count it.
-  const rows = [...state.events].reverse().slice(0, 30).map((e, i) => `<li><details${i === 0 ? ' open' : ''}><summary><small class="when">${esc(e.received_at)}</small> <code>${esc(e.event_type)}</code> <span class="tag">${esc(e.via)}</span>${aboutThisWalk(state, e) ? '' : ' <span class="tag">not this walk</span>'}</summary>${jsonBlock(e.data)}</details></li>`).join('');
+  const rows = [...state.events].reverse().slice(0, 30).map((e, i) => `<li><details${i === 0 ? ' open' : ''}><summary><small class="when">${esc(e.received_at)}</small> <code>${esc(e.event_type)}</code> <span class="tags"><span class="tag">${esc(e.via)}</span>${aboutThisWalk(state, e) ? '' : ' <span class="tag">not this walk</span>'}</span></summary>${jsonBlock(e.data)}</details></li>`).join('');
   return `<section class="panel" id="step-5" aria-labelledby="step-5-title">${stepHead(5, 'Step 5 — Hear from Abillio', status)}
     ${publicUrl
       ? `<p>Public URL <code>${esc(publicUrl)}</code>. <code>POST /accounts/notifications/channels/</code> + <code>POST /accounts/notifications/subscriptions/</code>; deliveries arrive at <code>/webhooks/abillio</code>, signed.</p>

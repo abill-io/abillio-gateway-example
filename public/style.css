@@ -656,6 +656,8 @@ p.error { margin: 10px 0 0; font-size: var(--text-sm); color: var(--danger); }
 }
 .events summary:hover { background: var(--hover-tint); }
 .events .when { font: 0.75rem/1.5 var(--font-mono); color: var(--muted); font-variant-numeric: tabular-nums; }
+/* How it came, and "not this walk" when it is about another one: one cell. */
+.events summary .tags { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 4px; }
 .events summary code { font-size: 0.8125rem; font-weight: 500; }
 .events details[open] { padding-bottom: 12px; }
 .events .json { max-height: 12rem; }
@@ -663,7 +665,7 @@ p.error { margin: 10px 0 0; font-size: var(--text-sm); color: var(--danger); }
   .events summary { grid-template-columns: 7px minmax(0, 1fr) auto; }
   .events summary::before { grid-row: 1 / span 2; align-self: start; margin-top: 7px; }
   .events .when { grid-area: 1 / 2; }
-  .events summary .tag { grid-area: 1 / 3; }
+  .events summary .tags { grid-area: 1 / 3; }
   .events summary code { grid-area: 2 / 2 / auto / -1; }
 }
 
