@@ -84,6 +84,22 @@ export async function sendTestDelivery(api: Api, channelId: string): Promise<voi
 export type RowChange = { kind: 'invoice' | 'payout'; id: string; from: string; to: string };
 export type PollResult = { events: StoredEvent[]; changes: RowChange[] };
 
+// Whether an event is about the walk the state holds: it names the stored
+// session, engagement, invoice or payout. Not every verified delivery is: a
+// reset re-creates Abillio's demo freelancers through the real flows, so the
+// subscription also hears their invoice events (guide §13), and a walk left
+// behind (another freelancer joined, a Start over) still has events on the
+// way. Those are stored like any other, but they are not this walk's.
+export function aboutThisWalk(state: State, event: StoredEvent): boolean {
+  const ours: [string, string | null | undefined][] = [
+    ['session_id', state.freelancer?.session_id],
+    ['engagement_id', state.freelancer?.engagement_id],
+    ['invoice_uuid', state.invoice?.id],
+    ['payout_uuid', state.payout?.id],
+  ];
+  return ours.some(([key, id]) => Boolean(id) && event.data[key] === id);
+}
+
 // The webhook's name for a payout's move, as the backend announces it: a
 // return (a paid or processing payout back at pending) is
 // `engagement.payout.failed` with status pending. A move no webhook announces
@@ -152,20 +168,20 @@ export async function pollForEvents(api: Api, state: State, now: () => number = 
 // route's guard on its draft, the same pattern. The rest of a row (the number
 // an issue stored) is the routes' to write. Events are appended once each by
 // their dedupe key; an event without one is never a copy, so it is always
-// appended. Answers whether anything was written.
-export function recordPoll(s: State, found: PollResult): boolean {
-  let wrote = false;
+// appended. Answers what was written, for the caller to say so (or not).
+export function recordPoll(s: State, found: PollResult): PollResult {
+  const written: PollResult = { events: [], changes: [] };
   for (const change of found.changes) {
     const row = change.kind === 'invoice' ? s.invoice : s.payout;
     if (row?.id !== change.id || row.status !== change.from) continue;
     row.status = change.to;
-    wrote = true;
+    written.changes.push(change);
   }
   for (const e of found.events) {
     if (!e.dedupe_key || !s.events.some(x => x.dedupe_key === e.dedupe_key)) {
       s.events.push(e);
-      wrote = true;
+      written.events.push(e);
     }
   }
-  return wrote;
+  return written;
 }

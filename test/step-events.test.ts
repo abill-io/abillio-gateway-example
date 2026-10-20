@@ -145,6 +145,6 @@ test('recordPoll appends an event that carries no dedupe key, even when a stored
   const keyless = (event_type: string): StoredEvent => ({ received_at: '2026-10-19T12:00:00.000Z', event_type, data: {}, via: 'poll' });
   const state = defaultState();
   state.events.push(keyless('engagement.invoice.paid'));
-  assert.equal(recordPoll(state, { events: [keyless('engagement.payout.completed')], changes: [] }), true);
+  assert.equal(recordPoll(state, { events: [keyless('engagement.payout.completed')], changes: [] }).events.length, 1);
   assert.deepEqual(state.events.map(e => e.event_type), ['engagement.invoice.paid', 'engagement.payout.completed']);
 });

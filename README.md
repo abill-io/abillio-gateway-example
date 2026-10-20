@@ -652,13 +652,26 @@ a 401. Only then does it parse the body. A retry is signed afresh with a new
 timestamp but carries the same body, so deliveries are deduplicated on the event
 and a hash of the body, and stored once; the test delivery is never
 deduplicated, because every press is a new one. The receiver answers 200 at
-once and tells the open back office to refresh. A delivery that fails a check
-stores nothing and shows up in the trace with the reason. During the walk the
-sample received, in order: the test delivery, `engagement.onboarding.started`,
-two `engagement.requirements_updated`, `engagement.onboarding.completed`,
+once. A delivery that fails a check stores nothing and shows up in the trace
+with the reason. During the walk the sample received, in order: the test
+delivery, `engagement.onboarding.started`, two
+`engagement.requirements_updated`, `engagement.onboarding.completed`,
 `engagement.invoice.status_changed`, `engagement.invoice.confirmed`,
 `engagement.invoice.paid`, `engagement.payout.processing` and
 `engagement.payout.completed`.
+
+Not every delivery is about this walk. A subscription hears every engagement
+of the account, and a sandbox reset re-creates Abillio's demo freelancers
+through the real flows, so after **Start over** their `engagement.invoice.confirmed`,
+`engagement.invoice.status_changed` and `engagement.invoice.paid` arrive as if
+they had just happened ([guide: questions partners ask](https://backend.abillio.dev/company-api/#faq)).
+The sample counts only what names the stored walk: an event counts for step 5,
+and reloads the open back office, when it carries the stored `session_id`,
+`engagement_id`, `invoice_uuid` or `payout_uuid` (`aboutThisWalk` in
+`steps/05-events.ts`). Every other event is still stored and listed, tagged
+**not this walk**; a test delivery is listed the same way, and reloads the
+page because a button asked for it. A real integration does the same: it acts
+only on the `engagement.*` events whose `engagement_id` it created itself.
 
 **Without a public URL.** There is no Connect button, and every five seconds the
 server makes the same reads the steps make (`GET /onboarding/sessions/{id}`
@@ -697,6 +710,15 @@ the reset, together with a connect request still pending and the keys it went
 out under (re-sent under a new key, that request would create a second channel
 or subscription). A refused reset forgets nothing, since the sandbox still
 holds the walk.
+
+The reset is not silent. Abillio re-creates the demo freelancers through the
+real flows, so with webhooks connected the next seconds bring their invoice
+events, `engagement.invoice.confirmed`, `engagement.invoice.status_changed` and
+`engagement.invoice.paid` (the demo wallet's `wallet.deposit_received` and
+`wallet.auto_payout_blocked` too, for a subscription that lists them, which the
+sample's does not). They name none of the new walk's ids, so they are stored,
+tagged **not this walk** and reload no page, and step 5 waits for an event of
+the new walk.
 
 ## The smoke test
 

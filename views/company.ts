@@ -3,6 +3,7 @@ import type { TraceEntry } from '../lib/trace.ts';
 import type { KeyReport } from '../steps/01-key.ts';
 import { issueStage, pendingRequest } from '../steps/03-issue.ts';
 import { DEFAULT_COMPANY, PAYOUT_OUTCOMES } from '../steps/04-pay.ts';
+import { aboutThisWalk } from '../steps/05-events.ts';
 import { esc, page } from './layout.ts';
 import { errorBox, jsonBlock, rail, stateTag, stepHead, stepStatuses, tracePanel, type StepStatus } from './partials.ts';
 
@@ -109,8 +110,10 @@ export function payPanel(state: State, status: StepStatus = stepStatuses(state)[
 
 export function eventsPanel(state: State, publicUrl: string | null, status: StepStatus = stepStatuses(state)[4]): string {
   const w = state.webhook;
-  // A log, newest first: one line per event, the newest one opened.
-  const rows = [...state.events].reverse().slice(0, 30).map((e, i) => `<li><details${i === 0 ? ' open' : ''}><summary><small class="when">${esc(e.received_at)}</small> <code>${esc(e.event_type)}</code> <span class="tag">${esc(e.via)}</span></summary>${jsonBlock(e.data)}</details></li>`).join('');
+  // A log, newest first: one line per event, the newest one opened. An event
+  // that names nothing of this walk (a reset's demo freelancers, a walk left
+  // behind, a test delivery) says so: step 5 does not count it.
+  const rows = [...state.events].reverse().slice(0, 30).map((e, i) => `<li><details${i === 0 ? ' open' : ''}><summary><small class="when">${esc(e.received_at)}</small> <code>${esc(e.event_type)}</code> <span class="tag">${esc(e.via)}</span>${aboutThisWalk(state, e) ? '' : ' <span class="tag">not this walk</span>'}</summary>${jsonBlock(e.data)}</details></li>`).join('');
   return `<section class="panel" id="step-5" aria-labelledby="step-5-title">${stepHead(5, 'Step 5 — Hear from Abillio', status)}
     ${publicUrl
       ? `<p>Public URL <code>${esc(publicUrl)}</code>. <code>POST /accounts/notifications/channels/</code> + <code>POST /accounts/notifications/subscriptions/</code>; deliveries arrive at <code>/webhooks/abillio</code>, signed.</p>

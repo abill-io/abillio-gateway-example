@@ -1,5 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { createHmac } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { createApp } from '../server.ts';
 import { Trace } from '../lib/trace.ts';
@@ -38,12 +39,16 @@ test('the progress line and the rail read where the walk stands off the stored s
     return s;
   };
   const invoice = (status: string) => ({ id: 'inv-1', number: 'DEMO-1', status, public_url: 'https://new.abillio.dev/invoice/x' });
-  const event = { received_at: '2026-10-19T10:00:00.000Z', event_type: 'engagement.onboarding.started', data: {}, via: 'webhook' as const, dedupe_key: 'k' };
+  const event = { received_at: '2026-10-19T10:00:00.000Z', event_type: 'engagement.onboarding.started', data: { session_id: 's1' }, via: 'webhook' as const, dedupe_key: 'k' };
+  // What a reset sends about Abillio's demo freelancers (guide §13): a real
+  // event, about an engagement this walk never had.
+  const demo = { received_at: '2026-10-19T10:00:00.000Z', event_type: 'engagement.invoice.paid', data: { engagement_id: 'e-demo', invoice_uuid: 'inv-demo' }, via: 'webhook' as const, dedupe_key: 'd' };
   const cases: { label: string; state: State; done: number; current: number | null }[] = [
     { label: 'nothing stored', state: defaultState(), done: 0, current: 1 },
     { label: 'a draft is not an issued invoice', state: Object.assign(joined(), { invoice: invoice('draft') }), done: 2, current: 3 },
     { label: 'an event heard before the invoice leaves the current step where it is', state: Object.assign(joined(), { events: [event] }), done: 3, current: 3 },
     { label: 'paid, and heard from Abillio: the walk is done', state: Object.assign(joined(), { invoice: invoice('paid'), events: [event] }), done: 5, current: null },
+    { label: 'an event about another walk is not step 5', state: Object.assign(joined(), { invoice: invoice('paid'), events: [demo] }), done: 4, current: 5 },
   ];
   for (const { label, state, done, current } of cases) {
     const html = await (await appWith((async () => ({})) as Api, memoryState(state)).app.request('/')).text();
@@ -560,7 +565,8 @@ test('the pay and simulate answers are written only while the invoice and payout
 
 test('the webhook receiver stores a correctly signed delivery once, refuses a bad one, and marks the page for refresh', async () => {
   const v = JSON.parse(readFileSync(new URL('./vectors.json', import.meta.url), 'utf8')).webhook;
-  const initial = defaultState();
+  // The vector is the paid event of invoice inv-1: this walk's invoice.
+  const initial = issuedState();
   initial.webhook = { channel_id: 'ch1', subscription_id: 'sub1', secret: v.secret, url: 'https://x/webhooks/abillio' };
   const stored: string[] = [];
   const { app, state } = appWith((async () => ({})) as Api, memoryState(initial), 'https://x', () => stored.push('refresh'), () => Number(v.timestamp) * 1000 + 1000);
@@ -605,9 +611,32 @@ test('what a delivery says is escaped on the page: neither its event type nor it
   assert.ok(html.includes('&lt;script&gt;alert(1)&lt;/script&gt;'));
 });
 
+test("an event about another walk (a reset's demo freelancers) is stored but not announced; one about this walk, and a test delivery, refresh the page", async () => {
+  const v = JSON.parse(readFileSync(new URL('./vectors.json', import.meta.url), 'utf8')).webhook;
+  const initial = joinedState();
+  initial.webhook = { channel_id: 'ch1', subscription_id: 'sub1', secret: v.secret, url: 'https://x/webhooks/abillio' };
+  const told: string[] = [];
+  const { app, state } = appWith((async () => ({})) as Api, fileLikeState(initial), 'https://x', () => told.push('refresh'), () => Number(v.timestamp) * 1000 + 1000);
+  const deliver = (body: unknown) => {
+    const raw = JSON.stringify(body);
+    const v1 = createHmac('sha256', v.secret).update(`${v.timestamp}.`).update(raw).digest('hex');
+    return app.request('/webhooks/abillio', { method: 'POST', body: raw, headers: { 'content-type': 'application/json', 'x-timestamp': v.timestamp, 'x-signature': `t=${v.timestamp},v1=${v1}` } });
+  };
+  const envelope = (event: string, data: Record<string, unknown>) => ({ event, timestamp: '2026-10-20T10:00:00.000000Z', account_id: 'a1', account_name: 'Acme', data });
+  assert.equal((await deliver(envelope('engagement.invoice.confirmed', { engagement_id: 'e-demo', invoice_uuid: 'inv-demo' }))).status, 200);
+  assert.equal(state.load().events.length, 1, 'stored, like every verified delivery');
+  assert.deepEqual(told, [], 'but no open page reloads for a walk nobody here started');
+  await deliver(envelope('engagement.kyc.updated', { engagement_id: 'e1', kyc_status: 'approved' }));
+  assert.deepEqual(told, ['refresh'], 'an event about this walk refreshes the page');
+  await deliver({ event_type: 'channel.test', message: 'This is a test notification from Abillio.', channel_name: 'gateway-example' });
+  assert.deepEqual(told, ['refresh', 'refresh'], 'so does a test delivery, which a button asked for');
+  const html = await (await app.request('/')).text();
+  assert.equal(html.match(/>not this walk</g)?.length, 2, 'the log tags the demo event and the test delivery: neither is about this walk');
+});
+
 test('two copies of a delivery that arrive together are stored once, and the page is told once', async () => {
   const v = JSON.parse(readFileSync(new URL('./vectors.json', import.meta.url), 'utf8')).webhook;
-  const initial = defaultState();
+  const initial = issuedState();
   initial.webhook = { channel_id: 'ch1', subscription_id: 'sub1', secret: v.secret, url: 'https://x/webhooks/abillio' };
   const told: string[] = [];
   // fileLikeState: each request reads its own copy, as two requests read state.json.
@@ -712,11 +741,13 @@ test('each move is a PATCH under a fresh key, so going back and forth moves the 
   assert.deepEqual(Object.keys(store.load().idempotency).filter(action => action.startsWith('webhook:patch:')), []);
 });
 
-test('a poll writes back only what it found: an event the store no longer has does not come back from its older copy', async t => {
+test('a poll writes back only what it found: an event the store no longer has does not come back from its older copy, and what it found about the walk left behind is not announced', async t => {
   t.mock.timers.enable({ apis: ['setInterval'] });
   const initial = issuedState('pending', { id: 'p1', status: 'pending' });
   initial.events = [{ received_at: '2026-10-19T10:00:00.000Z', event_type: 'channel.test', data: {}, via: 'webhook', dedupe_key: 'before-the-reset' }];
   const store = fileLikeState(initial);
+  let lastRead!: () => void;
+  const read = new Promise<void>(resolve => { lastRead = resolve; });
   const api = (async (_m: string, path: string) => {
     if (path === '/onboarding/sessions/s1') {
       // While the poll is out, the partner starts over: the events and steps 3–4 go.
@@ -724,16 +755,19 @@ test('a poll writes back only what it found: an event the store no longer has do
       return { state: 'in_progress', can_be_paid: false, purpose: 'onboarding', requirements: [] };
     }
     if (path === '/accounts/invoices/inv-1/') return { id: 'inv-1', status: 'paid' };
-    if (path === '/engagements/e1/payouts/p1') return { id: 'p1', status: 'paid' };
+    if (path === '/engagements/e1/payouts/p1') { lastRead(); return { id: 'p1', status: 'paid' }; }
     throw new Error(path);
   }) as Api;
-  let told!: () => void;
-  const stored = new Promise<void>(resolve => { told = resolve; });
-  appWith(api, store, null, () => told(), Date.now, 5000);
+  let told = 0;
+  appWith(api, store, null, () => { told++; }, Date.now, 5000);
   t.mock.timers.tick(5000);
-  await stored;
+  await read;
+  // The rest of the tick (the write) runs on promises only.
+  await new Promise(resolve => setImmediate(resolve));
   assert.deepEqual(store.load().events.filter(e => e.dedupe_key === 'before-the-reset'), []);
   assert.deepEqual({ invoice: store.load().invoice, payout: store.load().payout }, { invoice: null, payout: null }, 'nor does a row it read');
+  assert.deepEqual(store.load().events.map(e => e.event_type), ['engagement.invoice.paid', 'engagement.payout.completed'], 'what it found is stored');
+  assert.equal(told, 0, 'but it names an invoice and a payout the walk no longer has, so no page is told');
 });
 
 // A poll tick that lands while the issue call is out, both ways round. The

@@ -2,6 +2,7 @@ import type { State } from '../lib/store.ts';
 import type { TraceEntry } from '../lib/trace.ts';
 import { AbillioError } from '../lib/abillio.ts';
 import { issueStage } from '../steps/03-issue.ts';
+import { aboutThisWalk } from '../steps/05-events.ts';
 import { esc } from './layout.ts';
 
 export type StepStatus = 'done' | 'current' | 'upcoming';
@@ -9,16 +10,17 @@ export type StepStatus = 'done' | 'current' | 'upcoming';
 // Where the walk stands, read off the stored state the way the panels gate
 // their buttons: the key check stored the account (1), the freelancer has an
 // engagement (2), the invoice is past its draft (3) and paid (4), and Abillio
-// has told us something, by webhook or poll (5). The first step not done is
-// the current one; a later step can be done before it (events come in while
-// the freelancer onboards).
+// has told us something about this walk, by webhook or poll (5): what a reset
+// sends about its demo freelancers, or a test delivery, does not count. The
+// first step not done is the current one; a later step can be done before it
+// (events come in while the freelancer onboards).
 export function stepStatuses(state: State): StepStatus[] {
   const done = [
     Boolean(state.account),
     Boolean(state.freelancer?.engagement_id),
     issueStage(state) === 'issued',
     state.invoice?.status === 'paid',
-    state.events.length > 0,
+    state.events.some(e => aboutThisWalk(state, e)),
   ];
   const current = done.indexOf(false);
   return done.map((d, i) => (d ? 'done' : i === current ? 'current' : 'upcoming'));

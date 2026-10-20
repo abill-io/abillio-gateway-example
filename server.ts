@@ -9,14 +9,14 @@ import { csrf } from 'hono/csrf';
 import { streamSSE } from 'hono/streaming';
 import { AbillioError, createApi, type Api } from './lib/abillio.ts';
 import { loadEnv } from './lib/env.ts';
-import { defaultState, forgetIdempotencyKey, loadState, updateState, type KeyedOptions, type State, type Store } from './lib/store.ts';
+import { defaultState, forgetIdempotencyKey, loadState, updateState, type KeyedOptions, type State, type Store, type StoredEvent } from './lib/store.ts';
 import { Trace, trace as processTrace } from './lib/trace.ts';
 import { dedupeKey, parseDelivery, verifySignature } from './lib/webhooks.ts';
 import { checkKey, type KeyReport } from './steps/01-key.ts';
 import { findEngagement, onboardingAction, onboardingBody, readSession, returnUrlFor, startOnboarding, type JoinForm } from './steps/02-onboard.ts';
 import { draftInvoice, findSelfClient, invoiceRequest, issueInvoice, pendingRequest } from './steps/03-issue.ts';
 import { DEFAULT_COMPANY, PAYOUT_OUTCOMES, findPayout, fundWallet, payAction, payInvoice, readInvoice, readPayout, simulateAction, simulatePayout } from './steps/04-pay.ts';
-import { WEBHOOK_ACTIONS, connectWebhooks, pollForEvents, recordPoll, sendTestDelivery } from './steps/05-events.ts';
+import { WEBHOOK_ACTIONS, aboutThisWalk, connectWebhooks, pollForEvents, recordPoll, sendTestDelivery, type PollResult } from './steps/05-events.ts';
 import { companyPage } from './views/company.ts';
 import { joinPage } from './views/join.ts';
 import { page } from './views/layout.ts';
@@ -58,8 +58,14 @@ export function createApp(deps: Deps): Hono {
   let lastKey: KeyReport | null = null;
   const refreshListeners = new Set<() => void>();
   // One place that says "the page should reload": the webhook receiver and
-  // the poller (both Task 9) end up here.
+  // the poller end up here.
   const notifyStored = () => { deps.onStored(); for (const fn of refreshListeners) fn(); };
+  // Which stored events reload the page: one about this walk, and a test
+  // delivery, which a button asked for. A reset re-creates Abillio's demo
+  // freelancers, and the subscription hears their invoice events too: stored
+  // and shown, they would otherwise reload every open back office for a walk
+  // nobody here started.
+  const announced = (s: State, e: StoredEvent) => e.event_type === 'channel.test' || aboutThisWalk(s, e);
   // The account the stored key check found, if that check was made with the
   // key and the ABILLIO_ACCOUNT this process signs with. A check made with
   // others says nothing about the account reached now, so the guard below and
@@ -367,13 +373,14 @@ export function createApp(deps: Deps): Hono {
     // emission time inside the body, so distinct emissions never collide.
     // Decided inside the write, against what is stored by then: two copies
     // that arrive together are stored once, and the page is told once.
+    const event: StoredEvent = { received_at: new Date(deps.now()).toISOString(), event_type: delivery.event_type, data: delivery.data, via: 'webhook', dedupe_key: key };
     let stored = false;
-    deps.state.update(s => {
+    const after = deps.state.update(s => {
       if (delivery.event_type !== 'channel.test' && s.events.some(e => e.dedupe_key === key)) return;
-      s.events.push({ received_at: new Date(deps.now()).toISOString(), event_type: delivery.event_type, data: delivery.data, via: 'webhook', dedupe_key: key });
+      s.events.push(event);
       stored = true;
     });
-    if (stored) notifyStored();
+    if (stored && announced(after, event)) notifyStored();
     return c.text('ok', 200);
   });
 
@@ -390,10 +397,13 @@ export function createApp(deps: Deps): Hono {
       try {
         const found = await pollForEvents(deps.api, deps.state.load(), deps.now);
         // Written onto the state as it is by now, which the routes may have
-        // moved on meanwhile (recordPoll says what it may write).
-        let wrote = false;
-        if (found.events.length || found.changes.length) deps.state.update(s => { wrote = recordPoll(s, found); });
-        if (wrote) notifyStored();
+        // moved on meanwhile (recordPoll says what it may write). A row's new
+        // status is this walk's; an event is announced like a delivery.
+        if (found.events.length || found.changes.length) {
+          let written: PollResult = { events: [], changes: [] };
+          const after = deps.state.update(s => { written = recordPoll(s, found); });
+          if (written.changes.length || written.events.some(e => announced(after, e))) notifyStored();
+        }
       } catch (err) {
         console.warn('poll failed:', (err as Error).message);
       } finally {
