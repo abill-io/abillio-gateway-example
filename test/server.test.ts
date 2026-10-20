@@ -770,14 +770,15 @@ test('a channel refused in its envelope: the next press is a new attempt, with a
   assert.equal(state.load().webhook?.subscription_id, 'sub1');
 });
 
-test('each move is a PATCH under a fresh key, so going back and forth moves the channel every time', async () => {
+test('every Reconnect of a stored channel is a PATCH under a fresh key that points it here and re-enables it, the same URL included', async () => {
   const fake = fakeNotificationsApi();
   const connected = sandboxState();
   connected.webhook = { channel_id: 'ch1', subscription_id: 'sub1', secret: 'a'.repeat(64), url: `${A}/webhooks/abillio` };
   const store = fileLikeState(connected);
-  for (const url of [B, A, B]) await pressConnect(appWith(fake.api, store, url).app);
-  assert.deepEqual(fake.moves().map(m => JSON.parse(m.body).destination), [B, A, B].map(u => `${u}/webhooks/abillio`));
-  assert.equal(new Set(fake.moves().map(m => m.key)).size, 3, 'back to B is a new move, not a replay of the first one');
+  // A first: the same URL, on a channel Abillio may have disabled after ten failed deliveries.
+  for (const url of [A, B, A, B]) await pressConnect(appWith(fake.api, store, url).app);
+  assert.deepEqual(fake.moves().map(m => JSON.parse(m.body)), [A, B, A, B].map(u => ({ destination: `${u}/webhooks/abillio`, secret: 'a'.repeat(64), is_enabled: true })));
+  assert.equal(new Set(fake.moves().map(m => m.key)).size, 4, 'back to B is a new move, not a replay of the first one');
   assert.equal(store.load().webhook?.url, `${B}/webhooks/abillio`);
   assert.deepEqual(Object.keys(store.load().idempotency).filter(action => action.startsWith('webhook:patch:')), []);
 });

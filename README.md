@@ -204,8 +204,9 @@ answers `idempotency_key_reused`.
 
 A few actions deliberately take a fresh key on every press, because each press
 is meant to run again: the sandbox deposit, the test delivery, Start over, and
-the channel move in step 5 (a `PATCH` that sets a destination comes out the
-same however often it is sent). Two more are events rather than states, so
+Reconnect's `PATCH` in step 5 (it sets a destination, the secret and
+`is_enabled`, so it comes out the same however often it is sent). Two more are
+events rather than states, so
 their key is spent on any settled answer, a success included, and only an
 unknown outcome keeps it for the identical retry: the payout simulation, so
 `paid` after `returned` plays again instead of replaying the first `paid`, and
@@ -616,12 +617,14 @@ POST /accounts/notifications/channels/
   "secret": "<64 hex characters>", "is_enabled": true }
 ```
 
-When the channel already exists but points elsewhere (a quick tunnel gets a new
-URL on every start), **Reconnect** moves it with
-`PATCH /accounts/notifications/channels/{channel_id}` and
-`{ "destination": …, "secret": <the stored secret> }`. This is the answer from
-the walk, which moved the channel after Start over and so also shows that the
-channel outlives a sandbox reset:
+When the channel already exists, **Reconnect** sends
+`PATCH /accounts/notifications/channels/{channel_id}` with
+`{ "destination": …, "secret": <the stored secret>, "is_enabled": true }` under
+a fresh key, on every press: it moves the channel when this server's URL
+changed (a quick tunnel gets a new one on every start), and it re-enables a
+channel Abillio disabled after ten failed deliveries in a row. This is the
+answer from the walk, which moved the channel after Start over and so also
+shows that the channel outlives a sandbox reset:
 
 ```json
 {
@@ -737,12 +740,13 @@ pending `webhook_request` while a connect is under way, and `events`.
 **What can go wrong.** Without `PUBLIC_URL` the receiver answers 503, and the
 panel says how to get a public URL. While the channel points at a dead URL (a
 stopped tunnel), the test delivery answers 422 with the reason and real
-deliveries fail; Abillio retries a failed delivery a few times and disables the
-channel after ten failures in a row (re-enable it in the dashboard, or with a
-`PATCH` that sets `is_enabled`), so press **Reconnect** as soon as the URL
-changes. A 401 from your own receiver means the body was changed before it was
-verified (a framework that parsed and re-serialised it) or the secret is not
-the one you sent; a 400 means the clock or a replayed old delivery.
+deliveries fail; Abillio retries a failed delivery after 5, 15 and 45 minutes
+and disables the channel after ten failures in a row. Press **Reconnect** as
+soon as the URL changes, or once the channel is disabled: it points the channel
+at this server again and re-enables it, as the dashboard would. A 401 from your
+own receiver means the body was changed before it was verified (a framework
+that parsed and re-serialised it) or the secret is not the one you sent; a 400
+means the clock or a replayed old delivery.
 
 ## Start over
 

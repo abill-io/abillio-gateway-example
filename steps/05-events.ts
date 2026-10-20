@@ -37,16 +37,21 @@ export const WEBHOOK_ACTIONS = { channel: 'webhook:channel', subscription: 'webh
 //   key another secret or destination would be another request, which
 //   Abillio refuses for good (409). A refusal in Abillio's envelope clears it
 //   with the key, so the next press is a new attempt;
-// - a move, when the channel points elsewhere (the tunnel restarted on a new
-//   URL). A PATCH that sets the destination comes out the same however often
-//   it is sent, so each press sends it under a fresh key, like the test
-//   delivery: there is nothing to replay, and going back to an earlier URL
-//   always moves the channel;
+// - for a channel stored before this press, a PATCH that points it here and
+//   enables it: the tunnel may have restarted on a new URL, and Abillio
+//   disables a channel after ten failed deliveries in a row (guide §10), which
+//   only `is_enabled` undoes. It sets the destination, the stored secret and
+//   `is_enabled`, so it comes out the same however often it is sent; each
+//   press sends it under a fresh key, like the test delivery: there is nothing
+//   to replay, and going back to an earlier URL always moves the channel. A
+//   channel this press created already points here, enabled, unless a
+//   replayed create brought back an older URL;
 // - the subscription naming every event, for the stored channel.
 export async function connectWebhooks(api: Api, keyed: Keyed, store: Store, publicUrl: string, secret: string = randomBytes(32).toString('hex')): Promise<void> {
   const state = store.load();
   const url = `${publicUrl}/webhooks/abillio`;
   let webhook = state.webhook;
+  const stored = webhook !== null;
   if (!webhook) {
     const fresh = { url, secret };
     const request = store.update(s => { s.webhook_request ??= fresh; }).webhook_request ?? fresh;
@@ -59,9 +64,9 @@ export async function connectWebhooks(api: Api, keyed: Keyed, store: Store, publ
     const created = { channel_id: channel.id, subscription_id: null, secret: request.secret, url: request.url };
     webhook = store.update(s => { s.webhook ??= created; }).webhook ?? created;
   }
-  if (webhook.url !== url) {
+  if (stored || webhook.url !== url) {
     const { channel_id, secret: current } = webhook;
-    await api('PATCH', `/accounts/notifications/channels/${encodeURIComponent(channel_id)}`, { destination: url, secret: current }, { idempotencyKey: randomUUID() });
+    await api('PATCH', `/accounts/notifications/channels/${encodeURIComponent(channel_id)}`, { destination: url, secret: current, is_enabled: true }, { idempotencyKey: randomUUID() });
     webhook = store.update(s => { if (s.webhook?.channel_id === channel_id) s.webhook.url = url; }).webhook ?? { ...webhook, url };
   }
   if (!webhook.subscription_id) {
