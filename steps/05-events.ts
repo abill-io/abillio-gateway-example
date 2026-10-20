@@ -35,8 +35,9 @@ export const WEBHOOK_ACTIONS = { channel: 'webhook:channel', subscription: 'webh
 // - the channel. What its POST sends (the destination and a secret generated
 //   here) is stored before the first call and re-sent as it is: under a kept
 //   key another secret or destination would be another request, which
-//   Abillio refuses for good (409). A refusal in Abillio's envelope clears it
-//   with the key, so the next press is a new attempt;
+//   Abillio refuses for good (409). A refusal Abillio composed itself (an
+//   enveloped 4xx whose code is not `idempotency_*`) clears it with the key,
+//   so the next press is a new attempt;
 // - for a channel stored before this press, a PATCH that points it here and
 //   enables it: the tunnel may have restarted on a new URL, and Abillio
 //   disables a channel after ten failed deliveries in a row (guide §10), which

@@ -39,6 +39,13 @@ export class AbillioError extends Error {
   // envelope, with an `idempotency_*` code. Those, any other body without
   // the envelope (a proxy's error page) and any 5xx leave the outcome of the
   // keyed request unknown, so its key has to be kept for the retry.
+  // One case this cannot tell: a replay refused by the route's own checks
+  // keeps their generic code (401 unauthorized, 403 forbidden, 404 not_found),
+  // and Abillio still holds the key then too (guide §2). Read as settled
+  // here, it is forgotten: after a lost answer and then, say, a clock that
+  // drifted past 300 seconds, the next press goes out under a new key. No
+  // money moves twice that way (pay-invoice debits only what is still owed),
+  // but a lost channel answer can leave a second channel behind.
   get verified(): boolean {
     return this.status < 500 && !this.code.startsWith('http_') && !this.code.startsWith('idempotency_');
   }

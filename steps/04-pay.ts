@@ -26,9 +26,10 @@ export function simulateAction(payoutId: string, outcome: PayoutOutcome): string
   return `simulate:${payoutId}:${outcome}`;
 }
 
-// A deposit is the one action meant to run again at will, so its key is fresh
-// every press and never stored; every other key is tied to the thing it acts on
-// and goes through the route's keyed() helper.
+// A deposit is meant to run again at will, like the test delivery, the
+// channel's PATCH and Start over, so its key is fresh every press and never
+// stored; every other key is tied to the thing it acts on and goes through the
+// route's keyed() helper.
 export async function fundWallet(api: Api, amount: string, currency: string, companySlug: string, idempotencyKey: string = randomUUID()): Promise<{ company_slug: string; available: string }[]> {
   const rows = await api<BalanceRow[]>(
     'POST',

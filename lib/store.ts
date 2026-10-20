@@ -112,7 +112,8 @@ export type Store = { load: () => State; update: (fn: (s: State) => void) => Sta
 // keyed call takes it, so the route alone decides when a key is claimed and
 // when it is forgotten. `once` spends the key on any settled answer (an
 // action that is an event); `onRefused` clears what came with the key, in the
-// same write, when Abillio refuses in its envelope.
+// same write, when the answer is a refusal Abillio composed itself (an
+// enveloped 4xx whose code is not `idempotency_*`: AbillioError.verified).
 export type KeyedOptions = { once?: boolean; onRefused?: (s: State) => void };
 export type Keyed = <T>(state: State, action: string, call: () => Promise<T>, opts?: KeyedOptions) => Promise<T>;
 
