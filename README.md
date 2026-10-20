@@ -519,7 +519,9 @@ means the company account is not verified yet.
 
 The goal is to pay what the invoice owes from the company's Abillio wallet, let
 Abillio create the freelancer's payout on its own, and, in the sandbox, decide
-what the bank does with it (`steps/04-pay.ts`; [guide: paying](https://backend.abillio.dev/company-api/#paying)).
+what the bank does with it (`steps/04-pay.ts`; guide: paying what is billed to
+you, in [issuing](https://backend.abillio.dev/company-api/#issuing), and the
+deposit and payout simulators, in [sandbox](https://backend.abillio.dev/company-api/#sandbox)).
 
 **Fund the wallet** is the sandbox's stand-in for a bank transfer,
 `POST /accounts/wallet/sandbox/simulate-deposit` under a fresh key each press:
