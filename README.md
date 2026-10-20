@@ -71,6 +71,13 @@ Abillio runs one instance of this repo at https://demo.abillio.dev against a
 sandbox account, with real webhooks. Everyone sees the same walk; **Start over**
 resets it. It is the same code as this repo, pinned to a tag.
 
+The demo is shared, and so is what you type into it: the name and address on
+the join page show up for everyone who opens it after you, in the session
+status, in step 2, in the trace (the request body as typed, and the
+`GET /engagements/?search=<address>` lookup) and in `GET /api/state`. Keep the
+made-up name and the `@example.com` address the form suggests, and use test
+details in the popup; the join page says the same.
+
 ## Keep it safe
 
 Two files hold secrets, and neither belongs in a repository. `.env` holds
@@ -568,12 +575,20 @@ could; nothing is written, so fund that row and press again. `409 not_payable`:
 something holds the invoice (a document to sign, a check in progress), and its
 `blockers` say what. A `sent` invoice waits for its acceptance, and any status
 that cannot be paid answers 400. If no payout appears after a payment, the
-freelancer could not be paid out automatically: the invoice carries no verified
-payout method, or Abillio refused the payout, in which case your company's
-Abillio inbox has a `wallet.auto_payout_blocked` notification. The page says
-that no payout was created. A simulated outcome that cannot follow where the
-payout stands is a `409 payout_transition_not_allowed`, and a key with a payout
-cap refuses a bigger payment with `409 api_key_payout_limit`.
+freelancer could not be paid out automatically. Abillio creates the payout only
+for a verified payout method in the invoice currency; without one, or when it
+refused the payout, the money waits in the freelancer's balance, and Abillio
+raises `wallet.auto_payout_blocked` with the `invoice_uuid`. It lands in your
+company's Abillio inbox, and on any webhook whose subscription lists it (the
+sample's lists the engagement events, so it does not); the page says that no
+payout was created. A payment that puts the invoice on hold (one of the
+compliance checks it re-runs failed, say your company's register check needs
+renewing) creates no payout either: the invoice reads `held`, nothing pays out
+until Abillio's team releases it, and you hear
+`engagement.invoice.status_changed` rather than `wallet.auto_payout_blocked`. A
+simulated outcome that cannot follow where the payout stands is a
+`409 payout_transition_not_allowed`, and a key with a payout cap refuses a
+bigger payment with `409 api_key_payout_limit`.
 
 ## Step 5 — Hear from Abillio
 
