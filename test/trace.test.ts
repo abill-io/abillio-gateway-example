@@ -41,3 +41,11 @@ test("the polls cannot push the walk's own calls out of the last fifty", () => {
     ['/engagements/e1/payouts/p1', 720],
   ]);
 });
+
+test('a read refused the same way again folds too: request_id names the request, not the answer', () => {
+  const trace = new Trace();
+  const refused = (requestId: string, at: string): TraceEntry => ({ at, method: 'GET', path: '/onboarding/sessions/s1', requestBody: null, status: 404, responseBody: { error: { code: 'not_found', message: 'Onboarding session not found.', request_id: requestId } }, idempotencyKey: null, replayed: false, error: 'not_found: Onboarding session not found.' });
+  trace.push(refused('req-1', 't1'));
+  trace.push(refused('req-2', 't2'));
+  assert.deepEqual(trace.list().map(e => [e.at, e.count ?? 1, (e.responseBody as { error: { request_id: string } }).error.request_id]), [['t2', 2, 'req-2']], 'one entry, showing the latest request_id');
+});

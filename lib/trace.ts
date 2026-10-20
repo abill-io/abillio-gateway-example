@@ -17,9 +17,15 @@ export type TraceEntry = {
 };
 
 // The same read with the same answer: what a poll sends every few seconds.
+// An error envelope's request_id names the request, not the answer, and is
+// new every time, so it is left out of the comparison.
 function sameRead(a: TraceEntry, b: TraceEntry): boolean {
   return a.method === 'GET' && b.method === 'GET' && a.path === b.path && a.status === b.status && a.error === b.error
-    && JSON.stringify(a.responseBody) === JSON.stringify(b.responseBody);
+    && answerOf(a) === answerOf(b);
+}
+
+function answerOf(entry: TraceEntry): string {
+  return JSON.stringify(entry.responseBody, (key, value) => (key === 'request_id' ? undefined : value));
 }
 
 export class Trace {
