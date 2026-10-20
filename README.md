@@ -58,12 +58,14 @@ docker run --rm -p 4000:4000 --env-file .env -v gateway-state:/data abillio-gate
 ```
 
 The image is published for every `v*` tag as
-`ghcr.io/abill-io/abillio-gateway-example:<tag>` (and `:latest`), for amd64 and
-arm64. It runs the same `server.ts` as `npm start`, as the `node` user, and keeps
+`ghcr.io/abill-io/abillio-gateway-example:<tag>`, for amd64 and arm64, and
+`:latest` follows the highest release; a tag is published only once the tests,
+the typecheck and a start of the image itself (`/healthz`) have passed. It runs
+the same `server.ts` as `npm start`, as the `node` user, and keeps
 the state in the `/data` volume (`STATE_FILE=/data/state.json`), so a directory
 mounted there has to be writable by uid 1000. Docker reads `.env` literally:
-leave the values unquoted. With no `ABILLIO_API_KEY_ID` in the environment the
-container idles and says so, rather than failing to start.
+leave the values unquoted. With `ABILLIO_API_KEY_ID` or `ABILLIO_PRIVATE_KEY`
+empty the container idles and says so, rather than failing to start.
 
 ## Hosted demo
 

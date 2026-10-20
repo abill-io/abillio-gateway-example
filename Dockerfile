@@ -10,7 +10,8 @@ LABEL org.opencontainers.image.source="https://github.com/abill-io/abillio-gatew
 WORKDIR /app
 ENV NODE_ENV=production
 COPY package.json package-lock.json ./
-RUN npm ci --omit=dev
+# The npm cache is only for the install: it stays out of the image.
+RUN npm ci --omit=dev && npm cache clean --force
 # The whole repo minus .dockerignore. public/ comes along with its fonts and
 # their licence texts (the OFL wants them to travel together), and the server
 # serves /public from this working directory.
@@ -23,6 +24,7 @@ ENV PORT=4000 STATE_FILE=/data/state.json
 EXPOSE 4000
 VOLUME ["/data"]
 ENTRYPOINT ["/sbin/tini", "--"]
-# No key seeded yet (the deploy seeds it after the first roll-out): say so
-# once and idle, so the orchestrator does not restart-loop the container.
-CMD ["sh", "-c", "if [ -z \"$ABILLIO_API_KEY_ID\" ]; then echo 'gateway-example: ABILLIO_API_KEY_ID is empty, idling until it is seeded'; exec sleep infinity; fi; exec node --experimental-strip-types server.ts"]
+# No key seeded yet (the deploy seeds it after the first roll-out), or only
+# half of it: say so once and idle, so the orchestrator does not restart-loop
+# the container on the error loadEnv would raise.
+CMD ["sh", "-c", "if [ -z \"$ABILLIO_API_KEY_ID\" ] || [ -z \"$ABILLIO_PRIVATE_KEY\" ]; then echo 'gateway-example: ABILLIO_API_KEY_ID or ABILLIO_PRIVATE_KEY is empty, idling until both are seeded'; exec sleep infinity; fi; exec node --experimental-strip-types server.ts"]

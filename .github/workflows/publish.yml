@@ -1,6 +1,8 @@
 # Every v* tag publishes the image the hosted copy pins
-# (ghcr.io/abill-io/abillio-gateway-example:<tag>, and :latest), for amd64
-# and arm64. A tag whose tests or typecheck fail publishes nothing.
+# (ghcr.io/abill-io/abillio-gateway-example:<tag>) for amd64 and arm64, and
+# moves :latest when the tag is the highest plain release (vX.Y.Z). A tag
+# whose tests, typecheck or container smoke fail publishes nothing. Actions
+# are pinned by commit, since this job can write packages.
 name: publish image
 on:
   push:
@@ -11,9 +13,9 @@ jobs:
     permissions:
       contents: read
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       # The image's Node line, not whatever the runner ships.
-      - uses: actions/setup-node@v7
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 22
       - run: npm ci
@@ -26,20 +28,59 @@ jobs:
       contents: read
       packages: write
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # Every tag, to tell whether this one is the highest release.
+          fetch-depth: 0
+      # :latest only for the highest plain vX.Y.Z: not for a pre-release
+      # (v1.2.0-rc.1), nor for a patch of an older line pushed after a newer one.
+      - id: tags
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          image=ghcr.io/abill-io/abillio-gateway-example
+          highest=$(git tag --list 'v*' | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | sort -V | tail -n 1)
+          tags="$image:$TAG"
+          if [ "$TAG" = "$highest" ]; then tags="$tags,$image:latest"; fi
+          echo "publishing $tags"
+          echo "tags=$tags" >> "$GITHUB_OUTPUT"
       # QEMU runs the arm64 half of the build on the amd64 runner.
-      - uses: docker/setup-qemu-action@v4
-      - uses: docker/setup-buildx-action@v4
-      - uses: docker/login-action@v4
+      - uses: docker/setup-qemu-action@99012661954931238ded8c8b007157a8430204e1 # v4.4.0
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+      # The image on this runner's platform, loaded and started before anything
+      # is pushed: with a dummy key it must answer /healthz, and with half a key
+      # it must idle rather than exit.
+      - uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          load: true
+          tags: gateway-example:smoke
+      - name: Smoke the image
+        run: |
+          seed=0000000000000000000000000000000000000000000000000000000000000000
+          docker run -d --name smoke -e ABILLIO_API_KEY_ID=key_smoke -e ABILLIO_PRIVATE_KEY=$seed gateway-example:smoke
+          docker run -d --name idle -e ABILLIO_API_KEY_ID=key_smoke gateway-example:smoke
+          ok=
+          for i in $(seq 1 30); do
+            if docker exec smoke wget -qO- http://127.0.0.1:4000/healthz; then ok=1; break; fi
+            sleep 1
+          done
+          # Long enough for a node that would fail on half a key to have exited.
+          sleep 3
+          docker logs smoke
+          docker logs idle
+          [ -n "$ok" ] || { echo '/healthz never answered'; exit 1; }
+          [ "$(docker inspect -f '{{.State.Running}}' idle)" = true ] || { echo 'half a key: the container exited instead of idling'; exit 1; }
+          docker logs idle | grep -q 'idling until both are seeded'
+          docker rm -f smoke idle
+      - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
-      - uses: docker/build-push-action@v7
+      - uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         with:
           context: .
           platforms: linux/amd64,linux/arm64
           push: true
-          tags: |
-            ghcr.io/abill-io/abillio-gateway-example:${{ github.ref_name }}
-            ghcr.io/abill-io/abillio-gateway-example:latest
+          tags: ${{ steps.tags.outputs.tags }}
