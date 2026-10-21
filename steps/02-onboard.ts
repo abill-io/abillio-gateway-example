@@ -16,7 +16,9 @@ export type SessionStatus = {
   requirements: { key: string; state: string }[];
 };
 
-type SessionOut = { session_id: string; url: string; status: string; purpose: string };
+// What POST /onboarding/sessions/ answers, a first link's mint or an update
+// link's (steps/02b-requirements.ts).
+export type SessionOut = { session_id: string; url: string; status: string; purpose: string };
 type EngagementRow = { id: string; status: string; counterparty: { email: string; servicing_company: { slug: string } | null }; compliance: { can_be_paid: boolean }; requirements?: Requirements | null };
 
 export function returnUrlFor(publicUrl: string | null, port: number): string {

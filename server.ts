@@ -241,7 +241,10 @@ export function createApp(deps: Deps): Hono {
         Object.assign(s.freelancer, rest);
         // The list only over the one this check compared: a simulation
         // pressed while the reads were out stored a newer one.
-        if (requirements !== undefined && JSON.stringify(s.freelancer.requirements) === JSON.stringify(f.requirements)) s.freelancer.requirements = requirements;
+        if (requirements !== undefined && JSON.stringify(s.freelancer.requirements) === JSON.stringify(f.requirements)) {
+          s.freelancer.requirements = requirements;
+          if (!requirements) s.freelancer.reopened_after_session = null;
+        }
       });
     }
     return { status, engagement };
@@ -307,7 +310,7 @@ export function createApp(deps: Deps): Hono {
       // one. Whether the freelancer can be paid is the new session's to say.
       deps.state.update(s => {
         const previous = s.freelancer?.email.toLowerCase() === form.email.toLowerCase() ? s.freelancer : null;
-        s.freelancer = { email: form.email, session_id: session.session_id, session_url: session.url, engagement_id: previous?.engagement_id ?? null, engagement_status: previous?.engagement_status ?? null, can_be_paid: false, servicing_company_slug: previous?.servicing_company_slug ?? null, requirements: previous?.requirements ?? null };
+        s.freelancer = { email: form.email, session_id: session.session_id, session_url: session.url, engagement_id: previous?.engagement_id ?? null, engagement_status: previous?.engagement_status ?? null, can_be_paid: false, servicing_company_slug: previous?.servicing_company_slug ?? null, requirements: previous?.requirements ?? null, reopened_after_session: previous?.reopened_after_session ?? null };
       });
       return c.json(session);
     } catch (err) {
@@ -333,7 +336,9 @@ export function createApp(deps: Deps): Hono {
   // is spent on any settled answer (`once`), so the same button pressed again
   // after the freelancer has put it right plays again instead of replaying.
   // Abillio answers with the engagement as the company reads it, and what it
-  // says is stored only onto the walk the press acted on. A replayed answer
+  // says is stored only onto the walk the press acted on, with the session
+  // stored at that moment: whatever that link's completion says, however late
+  // it comes in, predates the reopen (recordCompletion). A replayed answer
   // (after a lost one) can be older than the engagement; while something is
   // open every load reads the engagement again (checkStatus), so it does not
   // stay.
@@ -349,7 +354,11 @@ export function createApp(deps: Deps): Hono {
         if (s.freelancer?.engagement_id !== engagementId) return;
         s.freelancer.can_be_paid = engagement.can_be_paid;
         s.freelancer.engagement_status = engagement.status;
-        s.freelancer.requirements = engagement.requirements;
+        // A list Abillio could not work out (`null`) proves nothing: the
+        // stored one stays.
+        if (engagement.requirements) s.freelancer.requirements = openRequirements(engagement.requirements);
+        // The link stored now predates this reopen; kept while something is open.
+        s.freelancer.reopened_after_session = s.freelancer.requirements ? s.freelancer.session_id : null;
       });
       return render(c);
     } catch (err) { return render(c, err); }
@@ -363,7 +372,10 @@ export function createApp(deps: Deps): Hono {
   // completion event follow it; the engagement, `can_be_paid` and what is open
   // stay until Abillio says otherwise. The answer, with the link, goes only to
   // the browser that pressed, as /join's does, and a refusal comes back as
-  // text for the note under the button.
+  // text for the note under the button. A page out of date gets 409, and
+  // popup.js loads it again: nobody is stored any more, or Abillio lists
+  // nothing left to complete (`requirements_complete`), which makes the list
+  // the page shows stale, so it goes.
   app.post('/steps/onboard/update-link', async c => {
     const state = deps.state.load();
     const f = state.freelancer;
@@ -378,6 +390,14 @@ export function createApp(deps: Deps): Hono {
       });
       return c.json(session);
     } catch (err) {
+      if (err instanceof AbillioError && err.code === 'requirements_complete') {
+        deps.state.update(s => {
+          if (!s.freelancer || s.freelancer.email.toLowerCase() !== f.email.toLowerCase()) return;
+          s.freelancer.requirements = null;
+          s.freelancer.reopened_after_session = null;
+        });
+        return c.text(joinErrorText(err), 409);
+      }
       return c.text(joinErrorText(err), 502);
     }
   });

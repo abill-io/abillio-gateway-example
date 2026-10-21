@@ -112,19 +112,21 @@ export function aboutThisWalk(state: State, event: StoredEvent): boolean {
 // event, so the back office learns it without the join page open. The
 // engagement's status read before it describes the engagement before the
 // completion (`invited`, not `active`), so it is dropped until a check reads
-// it again. While something a simulation reopened is open (step 2b), only an
-// update link's completion counts, and it closes the list: requirements
-// reopen only on an active engagement, whose links are update links, so a
-// first link's completion that arrives late (a slow delivery, a poll of a
-// session still stored) says nothing about them.
+// it again. While something a simulation reopened is open (step 2b), only
+// the completion of an update link minted after the reopen counts, and it
+// closes the list. The session stored when the list reopened
+// (`reopened_after_session`: the first link, or an earlier round's update
+// link) predates it, so that link's completion, however late it arrives (a
+// slow delivery, the poll of a session still stored), says nothing about it.
 export function recordCompletion(state: State, event: StoredEvent): void {
   const f = state.freelancer;
   if (!f || event.event_type !== 'engagement.onboarding.completed') return;
   if (event.data.session_id !== f.session_id || event.data.can_be_paid !== true) return;
-  if (f.requirements ? event.data.purpose !== 'update' : f.can_be_paid) return;
+  if (f.requirements ? event.data.purpose !== 'update' || event.data.session_id === f.reopened_after_session : f.can_be_paid) return;
   f.can_be_paid = true;
   f.engagement_status = null;
   f.requirements = null;
+  f.reopened_after_session = null;
 }
 
 // The webhook's name for a payout's move, as the backend announces it: a

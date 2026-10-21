@@ -39,11 +39,12 @@ test('writes go through a temp file so a crash never leaves a half-written state
 
 test('a freelancer stored by an older release loads as one Abillio has not yet said can be paid, with nothing reopened', () => {
   // data/state.json as 0.1.2 wrote it: the hosted copy's volume keeps it across
-  // the upgrade. 0.1.6 and earlier wrote no `requirements` either.
+  // the upgrade. 0.1.6 and earlier wrote no `requirements` either, nor the
+  // session they reopened after.
   const file = tempFile();
   const freelancer = { email: 'anna@example.com', session_id: 's1', session_url: 'https://new.abillio.dev/s/t', engagement_id: 'e1', servicing_company_slug: 'abillio-ks' };
   writeFileSync(file, JSON.stringify({ ...defaultState(), freelancer }));
-  assert.deepEqual(loadState(file).freelancer, { ...freelancer, engagement_status: null, can_be_paid: false, requirements: null });
+  assert.deepEqual(loadState(file).freelancer, { ...freelancer, engagement_status: null, can_be_paid: false, requirements: null, reopened_after_session: null });
 });
 
 test('a corrupt file is reported, not silently replaced', () => {

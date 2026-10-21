@@ -8,7 +8,7 @@
 // requirements and the events are the ones production sends.
 import type { Api } from '../lib/abillio.ts';
 import { idempotencyKeyFor, type Requirements, type State } from '../lib/store.ts';
-import { onboardingAction, openRequirements } from './02-onboard.ts';
+import { onboardingAction, type SessionOut } from './02-onboard.ts';
 
 // What step 2's "What happens later" plays, as the simulator names it. Each
 // outcome belongs to one kind, so the form sends the outcome alone. The
@@ -23,11 +23,12 @@ export type RequirementSimulation = (typeof REQUIREMENT_SIMULATIONS)[number];
 
 // What the sample keeps of the engagement the simulator answers with:
 // whether Abillio can pay the freelancer (`compliance.can_be_paid`, payouts
-// only) and what is open on their list.
-export type SimulatedEngagement = { id: string; status: string; can_be_paid: boolean; requirements: Requirements | null };
+// only) and their list as Abillio lists it, `complete` included. A list it
+// could not work out is `null`, which proves nothing: the route keeps the
+// one it has.
+export type SimulatedEngagement = { status: string; can_be_paid: boolean; requirements: Requirements | null };
 
-type EngagementOut = { id: string; status: string; compliance: { can_be_paid: boolean } | null; requirements: Requirements | null };
-type SessionOut = { session_id: string; url: string; status: string; purpose: string };
+type EngagementOut = { status: string; compliance: { can_be_paid: boolean } | null; requirements: Requirements | null };
 
 // The stored action a simulation's key lives under. A simulation is an event,
 // not a state: the route spends the key on any settled answer (`once`), so
@@ -46,12 +47,7 @@ export async function simulateRequirement(api: Api, state: State, engagementId: 
     { kind: simulation.kind, outcome: simulation.outcome },
     { idempotencyKey: idempotencyKeyFor(state, simulateRequirementAction(engagementId, simulation)) },
   );
-  return {
-    id: out.id,
-    status: out.status,
-    can_be_paid: out.compliance?.can_be_paid ?? false,
-    requirements: out.requirements ? openRequirements(out.requirements) : null,
-  };
+  return { status: out.status, can_be_paid: out.compliance?.can_be_paid ?? false, requirements: out.requirements };
 }
 
 // An update link's body: the address the engagement was minted for, where
@@ -67,7 +63,7 @@ export function updateLinkBody(email: string, returnUrl: string): UpdateLinkBody
 
 // Keyed like the first mint (onboardingAction: the address and a digest of
 // the exact body), and spent the same way by the route, on any answer.
-export async function startUpdate(api: Api, state: State, body: UpdateLinkBody): Promise<{ session_id: string; url: string; origin: string; purpose: string }> {
+export async function startUpdate(api: Api, state: State, body: UpdateLinkBody): Promise<{ session_id: string; url: string; origin: string }> {
   const session = await api<SessionOut>('POST', '/onboarding/sessions/', body, { idempotencyKey: idempotencyKeyFor(state, onboardingAction(body)) });
-  return { session_id: session.session_id, url: session.url, origin: new URL(session.url).origin, purpose: session.purpose };
+  return { session_id: session.session_id, url: session.url, origin: new URL(session.url).origin };
 }

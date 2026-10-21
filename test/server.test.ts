@@ -5,6 +5,7 @@ import { readFileSync } from 'node:fs';
 import { createApp } from '../server.ts';
 import { Trace } from '../lib/trace.ts';
 import { defaultState, type Requirements, type State } from '../lib/store.ts';
+import { setupDone } from '../steps/02-onboard.ts';
 import { AbillioError, type Api } from '../lib/abillio.ts';
 import { TEST_ENV, fileLikeState, memoryState, sandboxState } from './helpers.ts';
 
@@ -36,7 +37,7 @@ test('the progress line and the rail read where the walk stands off the stored s
   // Joined, and Abillio says the freelancer can be paid.
   const joined = (): State => {
     const s = sandboxState();
-    s.freelancer = { email: 'anna@example.com', session_id: 's1', session_url: 'https://new.abillio.dev/s/tok', engagement_id: 'e1', engagement_status: 'active', can_be_paid: true, servicing_company_slug: 'abillio-ks', requirements: null };
+    s.freelancer = { email: 'anna@example.com', session_id: 's1', session_url: 'https://new.abillio.dev/s/tok', engagement_id: 'e1', engagement_status: 'active', can_be_paid: true, servicing_company_slug: 'abillio-ks', requirements: null, reopened_after_session: null };
     return s;
   };
   // The freelancer agreed, so Abillio knows the engagement, but they cannot be
@@ -143,7 +144,7 @@ test("GET /api/state returns the stored state as JSON, without the webhook secre
   withSecret.account = sandboxState().account;
   // The link is the freelancer's bearer credential until they act on it (guide §9).
   const token = 't'.repeat(40) + 'wxyz';
-  withSecret.freelancer = { email: 'anna@example.com', session_id: 's1', session_url: `https://new.abillio.dev/s/${token}`, engagement_id: null, engagement_status: null, can_be_paid: false, servicing_company_slug: null, requirements: null };
+  withSecret.freelancer = { email: 'anna@example.com', session_id: 's1', session_url: `https://new.abillio.dev/s/${token}`, engagement_id: null, engagement_status: null, can_be_paid: false, servicing_company_slug: null, requirements: null, reopened_after_session: null };
   const { app: app2 } = appWith((async () => ({})) as Api, memoryState(withSecret));
   const body = await (await app2.request('/api/state')).text();
   assert.ok(!body.includes('a'.repeat(60)), 'the secret never leaves the server');
@@ -260,7 +261,7 @@ test('the /join key follows the exact body: a changed form never goes out under 
 
 test("GET /join pre-fills a fresh made-up address on every load, never the stored freelancer's, whose session stays in the console", async () => {
   const s = sandboxState();
-  s.freelancer = { email: 'last.visitor@example.com', session_id: 's1', session_url: 'https://new.abillio.dev/s/tok', engagement_id: 'e1', engagement_status: 'active', can_be_paid: true, servicing_company_slug: 'abillio-ks', requirements: null };
+  s.freelancer = { email: 'last.visitor@example.com', session_id: 's1', session_url: 'https://new.abillio.dev/s/tok', engagement_id: 'e1', engagement_status: 'active', can_be_paid: true, servicing_company_slug: 'abillio-ks', requirements: null, reopened_after_session: null };
   const { app } = appWith((async () => ({})) as Api, memoryState(s));
   const html = await (await app.request('/join')).text();
   const prefilled = /<input name="email" type="email" required value="([^"]*)">/.exec(html)?.[1];
@@ -315,7 +316,7 @@ test('opening the back office asks Abillio about a freelancer it cannot pay yet:
 });
 
 test('a load whose reads change nothing renders the page as stored and stores nothing: the session still says not yet, the read is refused, or a newer join replaced the session while the reads were out', async () => {
-  const ben = { email: 'ben@example.com', session_id: 's2', session_url: 'https://new.abillio.dev/s/t2', engagement_id: null, engagement_status: null, can_be_paid: false, servicing_company_slug: null, requirements: null };
+  const ben = { email: 'ben@example.com', session_id: 's2', session_url: 'https://new.abillio.dev/s/t2', engagement_id: null, engagement_status: null, can_be_paid: false, servicing_company_slug: null, requirements: null, reopened_after_session: null };
   const cases: { label: string; answer: { can_be_paid: boolean } | Error; newerJoin?: boolean; calls: string[] }[] = [
     { label: 'the session still says not yet', answer: { can_be_paid: false }, calls: [SESSION_READ, ENGAGEMENT_READ] },
     // A refused read does not take the page down with it (the trace shows it).
@@ -408,17 +409,21 @@ test('a requirement simulation is an event: its key is claimed as simulate-requi
   assert.deepEqual(state.load().idempotency, {}, 'no simulate-requirement key outlives its answer');
 });
 
-test('what a simulation answers is stored on the walk it was pressed for: what reopened, whether Abillio can still pay them, and the engagement status', async () => {
+test('what a simulation answers is stored on the walk it was pressed for: what reopened, whether Abillio can still pay them, the engagement status and the session stored when it ran', async () => {
   for (const [outcome, kind] of [['expired', 'identity_verification'], ['revoked', 'mandate']] as const) {
     const canBePaid = kind === 'mandate';
     const { app, state } = appWith((async () => engagementOut(reopenedList(kind), canBePaid)) as Api, fileLikeState(joinedState()));
     assert.equal((await pressRequirement(app, outcome)).status, 200, outcome);
     const f = state.load().freelancer!;
-    assert.deepEqual({ can_be_paid: f.can_be_paid, engagement_status: f.engagement_status, requirements: f.requirements }, { can_be_paid: canBePaid, engagement_status: 'active', requirements: reopenedList(kind) }, `${outcome}: a withdrawn mandate leaves them payable, and the list says what is open`);
+    assert.deepEqual({ can_be_paid: f.can_be_paid, engagement_status: f.engagement_status, requirements: f.requirements, reopened_after_session: f.reopened_after_session }, { can_be_paid: canBePaid, engagement_status: 'active', requirements: reopenedList(kind), reopened_after_session: 's1' }, `${outcome}: a withdrawn mandate leaves them payable, the list says what is open, and s1's completion predates it`);
   }
+  // A list Abillio could not work out (`null`) proves nothing: the one stored stays.
+  const kept = fileLikeState(reopenedState('identity_verification'));
+  await pressRequirement(appWith((async () => engagementOut(null, false)) as Api, kept).app, 'removed');
+  assert.deepEqual(kept.load().freelancer?.requirements, reopenedList('identity_verification'), 'a null list does not wipe the stored one');
   // The answer comes back after another freelancer joined: it is e1's, not theirs.
   const store = fileLikeState(joinedState());
-  const ben: State['freelancer'] = { email: 'ben@example.com', session_id: 's3', session_url: 'https://new.abillio.dev/s/t3', engagement_id: 'e2', engagement_status: 'invited', can_be_paid: false, servicing_company_slug: 'abillio-ks', requirements: null };
+  const ben: State['freelancer'] = { email: 'ben@example.com', session_id: 's3', session_url: 'https://new.abillio.dev/s/t3', engagement_id: 'e2', engagement_status: 'invited', can_be_paid: false, servicing_company_slug: 'abillio-ks', requirements: null, reopened_after_session: null };
   const api = (async () => { store.update(s => { s.freelancer = ben; }); return engagementOut(reopenedList('mandate'), true); }) as Api;
   await pressRequirement(appWith(api, store).app, 'revoked');
   assert.deepEqual(store.load().freelancer, ben, 'nothing is written onto the walk that replaced it');
@@ -452,7 +457,7 @@ test('Send a new link mints an update link for the stored address under a key sp
   const { app, state } = appWith(api, fileLikeState(reopenedState('identity_verification')));
   const res = await pressUpdateLink(app);
   assert.equal(res.status, 200);
-  assert.deepEqual(await res.json(), { session_id: 's2', url: 'https://new.abillio.dev/s/tok2', origin: 'https://new.abillio.dev', purpose: 'update' }, 'the link goes to the browser that pressed, with the origin popup.js trusts');
+  assert.deepEqual(await res.json(), { session_id: 's2', url: 'https://new.abillio.dev/s/tok2', origin: 'https://new.abillio.dev' }, 'the link goes to the browser that pressed, with the origin popup.js trusts');
   assert.deepEqual(calls.map(c => [c.path, c.body]), [['/onboarding/sessions/', { email: 'anna@example.com', return_url: 'http://localhost:4000/back', purpose: 'update' }]]);
   const before = reopenedState('identity_verification');
   assert.deepEqual(state.load(), { ...before, freelancer: { ...before.freelancer!, session_id: 's2', session_url: 'https://new.abillio.dev/s/tok2' } }, 'only the session moves, and no mint key is left');
@@ -460,14 +465,19 @@ test('Send a new link mints an update link for the stored address under a key sp
   assert.notEqual(calls[1].key, calls[0].key, 'every answered press is a new mint: Abillio hands back the same link while it is open');
 });
 
-test('a refused update link comes back as text for the note under the button and stores nothing; with nobody joined nothing is sent', async () => {
-  for (const code of ['requirements_complete', 'onboarding_purpose_mismatch']) {
-    const { app, state } = appWith((async () => { throw new AbillioError(409, { error: { code, message: 'Refused.' } }, ''); }) as Api, fileLikeState(reopenedState('mandate')));
-    const res = await pressUpdateLink(app);
-    assert.equal(res.status, 502, code);
-    assert.equal(await res.text(), `${code}: Refused.`, code);
-    assert.deepEqual(state.load(), reopenedState('mandate'), `${code}: nothing is stored`);
-  }
+test('a refused update link comes back as text for the note under the button and stores nothing; a page out of date gets 409: with nobody joined nothing is sent, and once Abillio lists nothing left to complete the stored list goes', async () => {
+  const refusing = (code: string) => appWith((async () => { throw new AbillioError(409, { error: { code, message: 'Refused.' } }, ''); }) as Api, fileLikeState(reopenedState('mandate')));
+  const refused = refusing('onboarding_purpose_mismatch');
+  const res = await pressUpdateLink(refused.app);
+  assert.deepEqual([res.status, await res.text()], [502, 'onboarding_purpose_mismatch: Refused.']);
+  assert.deepEqual(refused.state.load(), reopenedState('mandate'), 'nothing is stored');
+  // `requirements_complete`: the list the page shows is stale, so it goes,
+  // and popup.js loads the page again.
+  const complete = refusing('requirements_complete');
+  const stale = await pressUpdateLink(complete.app);
+  assert.deepEqual([stale.status, await stale.text()], [409, 'requirements_complete: Refused.']);
+  const before = reopenedState('mandate');
+  assert.deepEqual(complete.state.load(), { ...before, freelancer: { ...before.freelancer!, requirements: null, reopened_after_session: null } }, 'only the list goes');
   let called = false;
   const nobody = await pressUpdateLink(appWith((async () => { called = true; return {}; }) as Api, memoryState(sandboxState())).app);
   assert.deepEqual([nobody.status, await nobody.text(), called], [409, 'Nobody has joined yet: there is no address to send a link to.', false]);
@@ -524,6 +534,45 @@ test("an update link's completion heard by webhook closes what was reopened; a f
   assert.equal((await deliver('s2', 'update')).status, 200);
   assert.equal(state.load().freelancer?.requirements, null);
   assert.equal(step2Status(await (await app.request('/')).text()), 'Done');
+});
+
+test("in a second round the first round's update link is the session stored when the simulation runs: its completion closes nothing, neither read by the poll nor delivered late", async t => {
+  t.mock.timers.enable({ apis: ['setInterval'] });
+  const v = JSON.parse(readFileSync(new URL('./vectors.json', import.meta.url), 'utf8')).webhook;
+  // The first round closed through the update link s2 on the follow's read of
+  // the engagement, before any completion of s2 was recorded.
+  const closed = (): State => {
+    const s = joinedState();
+    s.freelancer = { ...s.freelancer!, session_id: 's2' };
+    s.webhook = { channel_id: 'ch1', subscription_id: 'sub1', secret: v.secret, url: 'https://x/webhooks/abillio' };
+    return s;
+  };
+  let read!: () => void;
+  const sessionRead = new Promise<void>(resolve => { read = resolve; });
+  const api = (async (method: string, path: string) => {
+    if (method === 'POST' && path === '/engagements/e1/requirements/sandbox/simulate') return engagementOut(reopenedList('mandate'), true);
+    if (path === '/onboarding/sessions/s2') { read(); return { state: 'complete', can_be_paid: true, purpose: 'update', requirements: [] }; }
+    throw new Error(path);
+  }) as Api;
+  // No PUBLIC_URL: Mandate withdrawn, and one poll tick reads s2, complete
+  // and payable.
+  const polled = fileLikeState(closed());
+  await pressRequirement(appWith(api, polled, null, () => {}, Date.now, 5000).app, 'revoked');
+  t.mock.timers.tick(5000);
+  await sessionRead;
+  await new Promise(resolve => setImmediate(resolve));
+  assert.deepEqual(polled.load().events.map(e => [e.event_type, e.data.session_id, e.via]), [['engagement.onboarding.completed', 's2', 'poll']], 'the poll found s2 complete');
+  assert.deepEqual(polled.load().freelancer?.requirements, reopenedList('mandate'), 'but s2 was stored before the simulation ran: the list stays');
+  assert.equal(setupDone(polled.load().freelancer), false);
+  // A public URL: Abillio's own delivery of s2's completion comes in late.
+  const delivered = fileLikeState(closed());
+  const { app } = appWith(api, delivered, 'https://x', () => {}, () => Number(v.timestamp) * 1000 + 1000);
+  await pressRequirement(app, 'revoked');
+  const raw = JSON.stringify({ event: 'engagement.onboarding.completed', timestamp: '2026-10-21T10:00:00.000000Z', account_id: 'a1', account_name: 'Acme', data: { session_id: 's2', freelancer_account_id: 'f1', freelancer_name: 'Anna Ozola', engagement_id: 'e1', purpose: 'update', can_be_paid: true } });
+  const v1 = createHmac('sha256', v.secret).update(`${v.timestamp}.`).update(raw).digest('hex');
+  assert.equal((await app.request('/webhooks/abillio', { method: 'POST', body: raw, headers: { 'content-type': 'application/json', 'x-timestamp': v.timestamp, 'x-signature': `t=${v.timestamp},v1=${v1}` } })).status, 200);
+  assert.deepEqual(delivered.load().freelancer?.requirements, reopenedList('mandate'), 'nor does its completion delivered late');
+  assert.equal(setupDone(delivered.load().freelancer), false);
 });
 
 // The back office as GET / renders it. A walk not done makes the load-time
@@ -584,7 +633,7 @@ type Call = { method: string; path: string; body: unknown; key: string };
 // what the issue route needs.
 function joinedState(): State {
   const s = sandboxState();
-  s.freelancer = { email: 'anna@example.com', session_id: 's1', session_url: 'https://new.abillio.dev/s/t', engagement_id: 'e1', engagement_status: 'active', can_be_paid: true, servicing_company_slug: 'abillio-ks', requirements: null };
+  s.freelancer = { email: 'anna@example.com', session_id: 's1', session_url: 'https://new.abillio.dev/s/t', engagement_id: 'e1', engagement_status: 'active', can_be_paid: true, servicing_company_slug: 'abillio-ks', requirements: null, reopened_after_session: null };
   return s;
 }
 
@@ -602,9 +651,10 @@ function reopenedList(kind: 'identity_verification' | 'payout_method' | 'mandate
 
 // joinedState() after such a simulation. Abillio can still pay a freelancer
 // whose mandate was withdrawn; not one whose identity or payout method went.
+// The list reopened after s1, the session stored when the simulation ran.
 function reopenedState(kind: 'identity_verification' | 'payout_method' | 'mandate'): State {
   const s = joinedState();
-  s.freelancer = { ...s.freelancer!, can_be_paid: kind === 'mandate', requirements: reopenedList(kind) };
+  s.freelancer = { ...s.freelancer!, can_be_paid: kind === 'mandate', requirements: reopenedList(kind), reopened_after_session: 's1' };
   return s;
 }
 
@@ -827,7 +877,7 @@ test('a refusal forgets only the key its own call sent: a key and a request anot
 test("the issue route writes only onto the walk it acted on: an answer that comes back after another freelancer was found stores nothing on their walk, and the press goes no further", async () => {
   // While a call is out, /join/status finds another freelancer and starts steps 3 and 4 over.
   const moveOn = (s: State) => {
-    s.freelancer = { email: 'ben@example.com', session_id: 's2', session_url: 'https://new.abillio.dev/s/t2', engagement_id: 'e2', engagement_status: 'invited', can_be_paid: false, servicing_company_slug: 'abillio-ks', requirements: null };
+    s.freelancer = { email: 'ben@example.com', session_id: 's2', session_url: 'https://new.abillio.dev/s/t2', engagement_id: 'e2', engagement_status: 'invited', can_be_paid: false, servicing_company_slug: 'abillio-ks', requirements: null, reopened_after_session: null };
     s.invoice = null; s.invoice_request = null; s.payout = null;
   };
   const cases = [
@@ -876,7 +926,7 @@ test('the pay routes fund, pay and settle, storing the payout', async () => {
   }) as Api;
   const initial = sandboxState();
   // Served by the Estonian company, not the default one: the deposit has to land on the freelancer's.
-  initial.freelancer = { email: 'anna@example.com', session_id: 's1', session_url: 'https://new.abillio.dev/s/t', engagement_id: 'e1', engagement_status: 'active', can_be_paid: true, servicing_company_slug: 'abillio-services-ou', requirements: null };
+  initial.freelancer = { email: 'anna@example.com', session_id: 's1', session_url: 'https://new.abillio.dev/s/t', engagement_id: 'e1', engagement_status: 'active', can_be_paid: true, servicing_company_slug: 'abillio-services-ou', requirements: null, reopened_after_session: null };
   initial.invoice = { id: 'inv-1', number: 'A-1', status: 'approved', public_url: 'u' };
   const { app, state } = appWith(api, memoryState(initial));
   const fund = () => app.request('/steps/pay/fund', { method: 'POST', body: new URLSearchParams({ amount: '250.00' }), headers: { 'content-type': 'application/x-www-form-urlencoded' } });
@@ -1452,34 +1502,43 @@ test('the latest key check decides: one that finds a production account, or one 
 
 test('a check stored under another key or ABILLIO_ACCOUNT reads as none: step 1 is up next, nobody is acting, and no button that writes to Abillio is enabled', async () => {
   // A whole walk, so every write button has what it needs: only the key
-  // check is in question.
-  const walk = (account: State['account']) => {
+  // check is in question. With something reopened (step 2b), step 2 offers
+  // Send a new link where What happens later was.
+  const walk = (account: State['account'], reopened: boolean) => {
     const s = issuedState('pending', { id: 'p1', status: 'pending' });
     s.account = account;
     s.webhook = { channel_id: 'ch1', subscription_id: 'sub1', secret: 'a'.repeat(64), url: 'https://x/webhooks/abillio' };
+    if (reopened) s.freelancer = { ...s.freelancer!, requirements: reopenedList('mandate'), reopened_after_session: 's1' };
     return s;
   };
   // Each button of a form that posts to a write route, and whether it is disabled.
   const writeButtons = (html: string) => [...html.matchAll(/<form method="post" action="([^"]+)"[^>]*>([\s\S]*?)<\/form>/g)]
     .filter(([, action]) => WRITE_ROUTES.some(([path]) => path === action))
     .flatMap(([, action, inner]) => [...inner.matchAll(/<button\b([^>]*)>/g)].map(b => ({ action, disabled: /\bdisabled\b/.test(b[1]) })));
-  const render = async (account: State['account']) => {
-    const { app } = appWith((async () => { throw new Error('a render calls nothing'); }) as Api, memoryState(walk(account)), 'https://x');
+  // A reopened walk is not done, so a load with the key checked reads
+  // Abillio: here the read fails, and the page renders what is stored.
+  const render = async (account: State['account'], reopened = false) => {
+    const { app } = appWith((async () => { throw new Error('unread'); }) as Api, memoryState(walk(account, reopened)), 'https://x');
     return { html: await (await app.request('/')).text(), join: await (await app.request('/join')).text(), state: (await (await app.request('/api/state')).json()) as State };
   };
   const checked = sandboxState().account!;
+  const later = ['/steps/issue', '/steps/pay/fund', '/steps/pay/pay', '/steps/pay/simulate', '/steps/events/connect', '/steps/events/test', '/reset'];
   for (const [label, swapped] of [['another key id', { ...checked, key_id: 'key_0' }], ['another ABILLIO_ACCOUNT', { ...checked, env_account: 'other-company' }]] as const) {
     const { html, join, state } = await render(swapped);
     assert.ok(!html.includes('Acting as'), `${label}: nobody is acting`);
     assert.equal(html.match(/<li class="step is-current">[\s\S]*?id="step-(\d)"/)?.[1], '1', `${label}: step 1 is up next`);
     assert.match(join, /<span class="progress-track" aria-hidden="true"><span class="is-current">/, `${label}: on the join page's progress line too`);
     assert.equal(state.account, null, `${label}: nor does /api/state show the account`);
-    const buttons = writeButtons(html);
-    assert.deepEqual(new Set(buttons.map(b => b.action)), new Set(['/steps/onboard/simulate', '/steps/issue', '/steps/pay/fund', '/steps/pay/pay', '/steps/pay/simulate', '/steps/events/connect', '/steps/events/test', '/reset']), `${label}: every write button is on the page`);
-    assert.deepEqual(buttons.filter(b => !b.disabled), [], `${label}: and none is enabled`);
+    for (const [step2, reopened] of [['/steps/onboard/simulate', false], ['/steps/onboard/update-link', true]] as const) {
+      const buttons = writeButtons(reopened ? (await render(swapped, true)).html : html);
+      assert.deepEqual(new Set(buttons.map(b => b.action)), new Set([step2, ...later]), `${label}: every write button is on the page (${step2})`);
+      assert.deepEqual(buttons.filter(b => !b.disabled), [], `${label}: and none is enabled (${step2})`);
+    }
   }
-  // The same walk, checked with the key this process runs with: all live.
-  const { html } = await render(checked);
-  assert.ok(html.includes('Acting as'));
-  assert.deepEqual(writeButtons(html).filter(b => b.disabled), []);
+  // The same walks, checked with the key this process runs with: all live.
+  for (const reopened of [false, true]) {
+    const { html } = await render(checked, reopened);
+    assert.ok(html.includes('Acting as'));
+    assert.deepEqual(writeButtons(html).filter(b => b.disabled), []);
+  }
 });

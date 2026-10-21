@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { SUBSCRIBED_EVENTS, connectWebhooks, pollForEvents, recordPoll, sendTestDelivery } from '../steps/05-events.ts';
 import { AbillioError, type Api } from '../lib/abillio.ts';
 import { defaultState, idempotencyKeyFor, type Keyed, type State, type StoredEvent } from '../lib/store.ts';
+import { setupDone } from '../steps/02-onboard.ts';
 import { memoryState } from './helpers.ts';
 
 // The step tests check the calls and their keys; the claim-before-call and
@@ -44,7 +45,7 @@ test('connectWebhooks creates a channel with a 64-hex secret and a subscription;
 
 test('pollForEvents reports what changed since the stored state, named like the real events', async () => {
   const state = defaultState();
-  state.freelancer = { email: 'anna@example.com', session_id: 's1', session_url: 'https://new.abillio.dev/s/t', engagement_id: 'e1', engagement_status: 'invited', can_be_paid: false, servicing_company_slug: 'abillio-ks', requirements: null };
+  state.freelancer = { email: 'anna@example.com', session_id: 's1', session_url: 'https://new.abillio.dev/s/t', engagement_id: 'e1', engagement_status: 'invited', can_be_paid: false, servicing_company_slug: 'abillio-ks', requirements: null, reopened_after_session: null };
   state.invoice = { id: 'inv-1', number: 'A-1', status: 'approved', public_url: 'u' };
   state.payout = { id: 'p1', status: 'pending' };
   const api = (async (_m: string, path: string) => {
@@ -70,7 +71,7 @@ test('pollForEvents reports what changed since the stored state, named like the 
 // otherwise for a path.
 function polled(answers: Record<string, () => unknown> = {}) {
   const state = defaultState();
-  state.freelancer = { email: 'anna@example.com', session_id: 's1', session_url: 'https://new.abillio.dev/s/t', engagement_id: 'e1', engagement_status: 'active', can_be_paid: true, servicing_company_slug: 'abillio-ks', requirements: null };
+  state.freelancer = { email: 'anna@example.com', session_id: 's1', session_url: 'https://new.abillio.dev/s/t', engagement_id: 'e1', engagement_status: 'active', can_be_paid: true, servicing_company_slug: 'abillio-ks', requirements: null, reopened_after_session: null };
   state.invoice = { id: 'inv-1', number: 'A-1', status: 'approved', public_url: 'u' };
   state.payout = { id: 'p1', status: 'pending' };
   const reads: Record<string, () => unknown> = {
@@ -160,9 +161,10 @@ test('recordPoll appends an event that carries no dedupe key, even when a stored
 });
 
 test("the poll reads an update link's completion off its state, not off can_be_paid, and names its purpose", async () => {
-  // A withdrawn mandate: payable all along, the update link (s2) still open.
+  // A withdrawn mandate: payable all along, and the update link (s2), minted
+  // after the list reopened with s1 stored, still open.
   const state = defaultState();
-  state.freelancer = { email: 'anna@example.com', session_id: 's2', session_url: 'https://new.abillio.dev/s/t2', engagement_id: 'e1', engagement_status: 'active', can_be_paid: true, servicing_company_slug: 'abillio-ks', requirements: { status: 'blocked', due: [{ kind: 'mandate', state: 'due', blocks: ['invoices'], detail: 'revoked', due_at: null, resource_id: 'e1' }], upcoming: [] } };
+  state.freelancer = { email: 'anna@example.com', session_id: 's2', session_url: 'https://new.abillio.dev/s/t2', engagement_id: 'e1', engagement_status: 'active', can_be_paid: true, servicing_company_slug: 'abillio-ks', requirements: { status: 'blocked', due: [{ kind: 'mandate', state: 'due', blocks: ['invoices'], detail: 'revoked', due_at: null, resource_id: 'e1' }], upcoming: [] }, reopened_after_session: 's1' };
   let session = { state: 'in_progress', can_be_paid: true, purpose: 'update', requirements: [] };
   const api = (async (_m: string, path: string) => {
     if (path === '/onboarding/sessions/s2') return session;
@@ -174,4 +176,25 @@ test("the poll reads an update link's completion off its state, not off can_be_p
   assert.deepEqual(found.events.map(e => [e.event_type, e.data]), [['engagement.onboarding.completed', { session_id: 's2', can_be_paid: true, purpose: 'update' }]]);
   recordPoll(state, found);
   assert.equal(state.freelancer.requirements, null, 'recorded, it closes what was reopened');
+});
+
+test("in a second round the poll reads the first round's update link complete, but the list reopened after it: only a link minted since closes the list", async () => {
+  // Mandate withdrawn again: payable all along, and the session stored when
+  // the simulation ran is the first round's update link (s2), complete since,
+  // its completion not recorded yet.
+  const state = defaultState();
+  state.freelancer = { email: 'anna@example.com', session_id: 's2', session_url: 'https://new.abillio.dev/s/t2', engagement_id: 'e1', engagement_status: 'active', can_be_paid: true, servicing_company_slug: 'abillio-ks', requirements: { status: 'blocked', due: [{ kind: 'mandate', state: 'due', blocks: ['invoices'], detail: 'revoked', due_at: null, resource_id: 'e1' }], upcoming: [] }, reopened_after_session: 's2' };
+  const api = (async (_m: string, path: string) => {
+    if (path === '/onboarding/sessions/s2' || path === '/onboarding/sessions/s3') return { state: 'complete', can_be_paid: true, purpose: 'update', requirements: [] };
+    throw new Error(path);
+  }) as Api;
+  recordPoll(state, await pollForEvents(api, state));
+  assert.deepEqual(state.events.map(e => [e.event_type, e.data.session_id]), [['engagement.onboarding.completed', 's2']], 'the poll found s2 complete');
+  assert.notEqual(state.freelancer.requirements, null, 'but s2 predates the reopen: the list stays');
+  assert.equal(setupDone(state.freelancer), false);
+  // Send a new link: s3, minted after the reopen, done in its turn.
+  state.freelancer.session_id = 's3';
+  recordPoll(state, await pollForEvents(api, state));
+  assert.equal(state.freelancer.requirements, null, "s3's completion closes the list");
+  assert.equal(setupDone(state.freelancer), true);
 });

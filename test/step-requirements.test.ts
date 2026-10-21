@@ -31,10 +31,10 @@ test('each simulation posts its own kind and outcome for the engagement, under a
   }, 'each key is stored under its own action');
   assert.ok(calls.every(c => /^[0-9a-f-]{36}$/.test(c.key)), 'and is a UUID, never the action itself');
   assert.deepEqual(answers, [
-    { id: 'e1', status: 'active', can_be_paid: false, requirements: reopened('identity_verification') },
-    { id: 'e1', status: 'active', can_be_paid: false, requirements: reopened('payout_method') },
-    { id: 'e1', status: 'active', can_be_paid: true, requirements: reopened('mandate') },
-  ], 'can_be_paid is compliance.can_be_paid; the list is kept as listed while open');
+    { status: 'active', can_be_paid: false, requirements: reopened('identity_verification') },
+    { status: 'active', can_be_paid: false, requirements: reopened('payout_method') },
+    { status: 'active', can_be_paid: true, requirements: reopened('mandate') },
+  ], 'can_be_paid is compliance.can_be_paid; the list comes back as Abillio lists it, for the route to read');
 });
 
 test('an update link is the same mint for the stored address with purpose update, keyed like the first mint on the address and a digest of its exact body', async () => {
@@ -45,7 +45,7 @@ test('an update link is the same mint for the stored address with purpose update
   }) as Api;
   const state = defaultState();
   const body = updateLinkBody('Anna@Example.com', 'http://localhost:4000/back');
-  assert.deepEqual(await startUpdate(api, state, body), { session_id: 's2', url: 'https://new.abillio.dev/s/tok2', origin: 'https://new.abillio.dev', purpose: 'update' });
+  assert.deepEqual(await startUpdate(api, state, body), { session_id: 's2', url: 'https://new.abillio.dev/s/tok2', origin: 'https://new.abillio.dev' });
   assert.deepEqual(calls.map(c => [c.path, c.body]), [['/onboarding/sessions/', { email: 'Anna@Example.com', return_url: 'http://localhost:4000/back', purpose: 'update' }]]);
   const action = onboardingAction(body);
   assert.match(action, /^onboard:anna@example\.com:[0-9a-f]{8}$/);

@@ -134,7 +134,7 @@ function officePage(answers: Record<string, Answer>) {
   return { button, note, popup, fetched, ticks, stopped, navigation, settle, press, message };
 }
 
-const minted = json({ session_id: 's2', url: 'https://new.abillio.dev/s/tok2', origin: 'https://new.abillio.dev', purpose: 'update' });
+const minted = json({ session_id: 's2', url: 'https://new.abillio.dev/s/tok2', origin: 'https://new.abillio.dev' });
 const updateStatus = (state: string, can_be_paid: boolean) => json({ state, can_be_paid, purpose: 'update', requirements: [{ key: 'kyc', state: state === 'complete' ? 'done' : 'not_started' }], engagement_id: 'e1' });
 
 test('Send a new link opens the popup from the click, points it at the update link and follows the session; once the link has done its job the back office loads again', async () => {
@@ -147,7 +147,7 @@ test('Send a new link opens the popup from the click, points it at the update li
   assert.equal(page.button.disabled, false, 'given back: another press reopens the same link while it is open');
   assert.deepEqual(page.fetched, ['/steps/onboard/update-link', '/join/status']);
   assert.equal(page.ticks.length, 1, 'and keeps asking every 3 s');
-  assert.equal(page.note.textContent, 'Waiting for the freelancer in the Abillio window (still open: kyc not_started). This page asks again every 3 s.');
+  assert.equal(page.note.textContent, 'Waiting for the freelancer in the Abillio window. Still open: identity verification (not started). This page asks again every 3 s.');
   status = updateStatus('complete', true);
   page.ticks[0]();
   await page.settle();
@@ -168,13 +168,39 @@ test('an update link is followed on its state, not on can_be_paid: payable with 
   assert.deepEqual(page.navigation, []);
 });
 
-test('a refused update link is said in the note, the popup closes and the button comes back', async () => {
-  const page = officePage({ '/steps/onboard/update-link': () => new Response('requirements_complete: Nothing left to complete.', { status: 502 }) });
+test('a walk reset elsewhere while the link is followed stops the follow and says to reload', async () => {
+  let status = updateStatus('in_progress', false);
+  const page = officePage({ '/steps/onboard/update-link': minted, '/join/status': () => status() });
   await page.press();
-  assert.equal(page.note.textContent, 'Could not send a new link: requirements_complete: Nothing left to complete.');
+  status = json({ state: 'none', can_be_paid: false, requirements: [] });
+  page.ticks[0]();
+  await page.settle();
+  assert.deepEqual(page.stopped, [1]);
+  assert.equal(page.note.textContent, 'This walk was reset — reload the page.');
+  assert.deepEqual(page.navigation, []);
+});
+
+test("the follow names what is still open in step 2's words, not by Abillio's keys", async () => {
+  const rows = [{ key: 'profile', state: 'done' }, { key: 'country', state: 'not_started' }, { key: 'kyc', state: 'pending_review' }, { key: 'payout_method', state: 'not_started' }, { key: 'member_fee', state: 'in_progress' }, { key: 'new_requirement', state: 'failed' }];
+  const page = officePage({ '/steps/onboard/update-link': minted, '/join/status': json({ state: 'in_progress', can_be_paid: false, purpose: 'update', requirements: rows, engagement_id: 'e1' }) });
+  await page.press();
+  assert.equal(page.note.textContent, 'Waiting for the freelancer in the Abillio window. Still open: tax country (not started); identity verification (pending review); payout method (not started); membership fee (in progress); new requirement (failed). This page asks again every 3 s.');
+});
+
+test('a refused update link is said in the note, the popup closes and the button comes back; a 409 says the page is out of date, so it loads again', async () => {
+  const page = officePage({ '/steps/onboard/update-link': () => new Response('onboarding_purpose_mismatch: The engagement is not active.', { status: 502 }) });
+  await page.press();
+  assert.equal(page.note.textContent, 'Could not send a new link: onboarding_purpose_mismatch: The engagement is not active.');
   assert.equal(page.popup.closed, true);
   assert.equal(page.button.disabled, false);
   assert.deepEqual(page.fetched, ['/steps/onboard/update-link'], 'and nothing is followed');
+  // Abillio lists nothing left to complete, and the server has dropped the
+  // list this page still shows (or nobody is stored any more).
+  const stale = officePage({ '/steps/onboard/update-link': () => new Response('requirements_complete: Nothing left to complete.', { status: 409 }) });
+  await stale.press();
+  assert.equal(stale.popup.closed, true);
+  assert.deepEqual(stale.navigation, ['/']);
+  assert.deepEqual(stale.fetched, ['/steps/onboard/update-link'], 'and nothing is followed');
 });
 
 test("on the back office a message from Abillio's popup starts the follow; one from another origin, or without Abillio's marker, is ignored", async () => {

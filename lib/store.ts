@@ -61,6 +61,9 @@ export type State = {
   // `requirements` is what a step 2b simulation reopened, as the engagement
   // lists it while something is open; null when nothing is, and always during
   // a first onboarding, which goes by `can_be_paid` alone.
+  // `reopened_after_session` is the session stored when it reopened (null
+  // while nothing is open): that link's completion, however late it arrives,
+  // predates the reopen, so only a link minted since closes the list.
   freelancer: {
     email: string;
     session_id: string;
@@ -70,6 +73,7 @@ export type State = {
     can_be_paid: boolean;
     servicing_company_slug: string | null;
     requirements: Requirements | null;
+    reopened_after_session: string | null;
   } | null;
   invoice: { id: string; number: string; status: string; public_url: string } | null;
   invoice_request: InvoiceRequest | null;
@@ -104,7 +108,7 @@ export function loadState(file: string = DEFAULT_FILE): State {
   // earlier) reads as one it has said nothing about yet, and one stored before
   // step 2b (0.1.6 and earlier) as one with nothing reopened.
   const f = state.freelancer;
-  if (f) state.freelancer = { ...f, engagement_status: f.engagement_status ?? null, can_be_paid: f.can_be_paid ?? false, requirements: f.requirements ?? null };
+  if (f) state.freelancer = { ...f, engagement_status: f.engagement_status ?? null, can_be_paid: f.can_be_paid ?? false, requirements: f.requirements ?? null, reopened_after_session: f.reopened_after_session ?? null };
   return state;
 }
 

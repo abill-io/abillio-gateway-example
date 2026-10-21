@@ -41,18 +41,31 @@
     if (over) clearInterval(timer);
   };
 
+  // The session's rows in plain words: what step 2 also names, in its words
+  // (views/company.ts), the tax country as the join form calls it, and any
+  // other key by its own name.
+  const ROW_NAMES = new Map([
+    ['kyc', 'identity verification'],
+    ['payout_method', 'payout method'],
+    ['member_fee', 'membership fee'],
+    ['country', 'tax country'],
+  ]);
+  const plainRow = r => `${ROW_NAMES.get(r.key) ?? String(r.key).replaceAll('_', ' ')} (${String(r.state).replaceAll('_', ' ')})`;
+
   // The back office follows an update link on its `state`, never on
   // `can_be_paid`: a freelancer can be payable while the link still has
   // something to finish (a mandate to grant again, say). Once the link has
   // done its job the page loads itself again, and step 2 reads what the
-  // server stored; an expired link stops the follow and says what to do. The
-  // note is text, never markup.
+  // server stored; an expired link, or a walk started over elsewhere (nobody
+  // stored any more), stops the follow and says what to do. The note is
+  // text, never markup.
   const renderUpdate = s => {
-    if (s.state === 'complete' || s.state === 'expired') clearInterval(timer);
+    if (s.state === 'complete' || s.state === 'expired' || s.state === 'none') clearInterval(timer);
     if (s.state === 'complete') { location.replace('/'); return; }
     if (s.state === 'expired') { said = 'The link expired before it was finished: send a new link.'; return; }
-    const open = (s.requirements || []).filter(r => r.state !== 'done').map(r => `${r.key} ${r.state}`).join(', ');
-    said = `Waiting for the freelancer in the Abillio window${open ? ` (still open: ${open})` : ''}. This page asks again every 3 s.`;
+    if (s.state === 'none') { said = 'This walk was reset — reload the page.'; return; }
+    const open = (s.requirements || []).filter(r => r.state !== 'done').map(plainRow).join('; ');
+    said = `Waiting for the freelancer in the Abillio window.${open ? ` Still open: ${open}.` : ''} This page asks again every 3 s.`;
   };
 
   const render = join ? renderJoin : renderUpdate;
@@ -103,9 +116,13 @@
     popup = window.open('about:blank', 'abillio', 'popup,width=520,height=760');
     const res = await fetch(join ? '/join' : '/steps/onboard/update-link', { method: 'POST', body: new URLSearchParams(new FormData(form)) });
     if (!res.ok) {
+      popup && popup.close();
+      // The update-link route's 409: this page is out of date (Abillio lists
+      // nothing left to complete, and the server has dropped the list shown
+      // here; or nobody is stored any more), so it loads again.
+      if (!join && res.status === 409) { location.replace('/'); return; }
       said = `${join ? 'Could not start' : 'Could not send a new link'}: ${await res.text()}`;
       sayNote();
-      popup && popup.close();
       // app.js disabled the button a tick after the submit. Nothing navigates
       // away on an error, so give it back for a corrected resubmit.
       for (const b of form.querySelectorAll('button')) b.disabled = false;
