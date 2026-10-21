@@ -5,7 +5,7 @@ import { setupDone } from '../steps/02-onboard.ts';
 import { REQUIREMENT_SIMULATIONS, type RequirementSimulation } from '../steps/02b-requirements.ts';
 import { issueStage, pendingRequest } from '../steps/03-issue.ts';
 import { DEFAULT_COMPANY, PAYOUT_OUTCOMES } from '../steps/04-pay.ts';
-import { aboutThisWalk } from '../steps/05-events.ts';
+import { CHANNEL_NAME, aboutThisWalk } from '../steps/05-events.ts';
 import { latestUpdate } from '../lib/updates.ts';
 import { esc, page } from './layout.ts';
 import { errorBox, jsonBlock, rail, stateTag, stepPanel, stepStatuses, tracePanel, type StepStatus } from './partials.ts';
@@ -194,21 +194,62 @@ export function payPanel(state: State, status: StepStatus = stepStatuses(state)[
   `, expanded);
 }
 
+// "1 update", "2 updates".
+function counted(n: number, one: string, many: string): string {
+  return `${n} ${n === 1 ? one : many}`;
+}
+
+// With a public URL, whether Abillio delivers here: a channel with its
+// subscription (a channel without one hears nothing), pointing at this
+// server's receiver (a quick tunnel gets a new URL on every start).
+function connectionLine(w: State['webhook'], receiver: string): string {
+  if (!w) return '<b>Not connected</b> — press Connect webhooks.';
+  if (!w.subscription_id) return `<b>Not connected yet</b>: the channel <code>${esc(CHANNEL_NAME)}</code> exists, but nothing is subscribed to it — press Reconnect.`;
+  const moved = w.url === receiver ? '' : `, but this server now answers at <code>${esc(receiver)}</code>: press Reconnect to move the channel`;
+  return `<b>Webhooks connected</b> to <code>${esc(w.url)}</code> (channel <code>${esc(CHANNEL_NAME)}</code>)${moved}.`;
+}
+
+// What came in about this walk, and how. Nothing in while step 2 is done means
+// the status check confirmed it (the join page's, or the one a load of this
+// page makes): no event said so, and none is on its way about it.
+function receivedLine(byWebhook: number, byPoll: number, setUp: boolean, publicUrl: string | null, connected: boolean): string {
+  if (byWebhook && byPoll) return `${counted(byWebhook + byPoll, 'update', 'updates')} received for this walkthrough: ${byWebhook} by webhook, ${byPoll} by polling.`;
+  if (byWebhook) return `${counted(byWebhook, 'webhook delivery', 'webhook deliveries')} received for this walkthrough.`;
+  if (byPoll) return `${counted(byPoll, 'update', 'updates')} found by polling for this walkthrough.`;
+  if (setUp && !publicUrl) return 'Step 2 was confirmed by reading the session status.';
+  if (setUp) return `Step 2 was confirmed by reading the session status; ${connected ? 'webhook deliveries about this walkthrough will appear here as they arrive' : 'webhook deliveries will appear here once connected'}.`;
+  if (!publicUrl) return 'Waiting for the first update about this walkthrough.';
+  return connected ? 'Waiting for the first webhook delivery about this walkthrough.' : '';
+}
+
 export function eventsPanel(state: State, publicUrl: string | null, status: StepStatus = stepStatuses(state)[4], expanded?: boolean): string {
   const w = state.webhook;
   // A log, newest first: one line per event, payloads available on demand. An event
   // that names nothing of this walk (a reset's demo freelancers, a walk left
   // behind, a test delivery) says so: step 5 does not count it.
   const rows = [...state.events].reverse().slice(0, 30).map(e => `<li><details><summary><small class="when">${esc(e.received_at)}</small> <code>${esc(e.event_type)}</code> <span class="tags"><span class="tag">${esc(e.via)}</span>${aboutThisWalk(state, e) ? '' : ' <span class="tag">not this walk</span>'}</span></summary>${jsonBlock(e.data)}</details></li>`).join('');
-  const count = state.events.filter(e => aboutThisWalk(state, e)).length;
-  return stepPanel(5, status, count ? `${count} update${count === 1 ? '' : 's'} received for this walkthrough.` : 'Receive status updates from Abillio.', `
+  const ours = state.events.filter(e => aboutThisWalk(state, e));
+  const count = ours.length;
+  const byWebhook = ours.filter(e => e.via === 'webhook').length;
+  // Delivering here: subscribed, to this server's receiver.
+  const receiver = publicUrl ? `${publicUrl}/webhooks/abillio` : null;
+  const connected = Boolean(receiver && w?.subscription_id && w.url === receiver);
+  // A test delivery is about no walk, but it shows that deliveries reach this server.
+  const lastTest = w ? [...state.events].reverse().find(e => e.event_type === 'channel.test') : undefined;
+  const facts = [
+    receiver ? connectionLine(w, receiver) : '',
+    receivedLine(byWebhook, count - byWebhook, setupDone(state.freelancer), publicUrl, connected),
+    lastTest ? `The last test delivery arrived at ${esc(lastTest.received_at)}.` : '',
+  ].filter(Boolean).join(' ');
+  const hint = count ? `${counted(count, 'update', 'updates')} received for this walkthrough.` : !publicUrl ? 'Receive status updates from Abillio.' : connected ? 'Webhooks connected.' : w?.subscription_id ? 'Webhooks point at an earlier address.' : 'Webhooks not connected.';
+  return stepPanel(5, status, hint, `
     <p class="step-copy">Your company keeps track of onboarding, invoices and payouts through updates from Abillio.</p>
-    <p class="facts">${count ? `${count} update${count === 1 ? '' : 's'} received for this walkthrough.` : 'Waiting for the first update about this walkthrough.'}</p>
+    <p class="facts">${facts}</p>
     ${!publicUrl ? '<p class="muted">This demo checks for updates automatically every 5 seconds. No action is needed here.</p>' : ''}
     ${publicUrl ? `<div class="button-row"><form method="post" action="/steps/events/connect"><button${live(state)}>${w ? 'Reconnect' : 'Connect webhooks'}</button></form></div>` : ''}
     ${integrationDetails(`
     ${publicUrl
-      ? `<p>Public URL <code>${esc(publicUrl)}</code>. <code>POST /accounts/notifications/channels/</code> + <code>POST /accounts/notifications/subscriptions/</code>; deliveries arrive at <code>/webhooks/abillio</code>, signed.</p>
+      ? `<p>Public URL <code>${esc(publicUrl)}</code>. <code>POST /accounts/notifications/channels/</code> + <code>POST /accounts/notifications/subscriptions/</code>; deliveries arrive at <code>/webhooks/abillio</code>, signed. A 409 for the channel's name means an earlier connect made it: the press finds it with <code>GET /accounts/notifications/channels/</code> and adopts it.</p>
          ${w ? `<form method="post" action="/steps/events/test"><button class="secondary"${live(state)}>Send a test delivery</button></form>` : ''}
          ${w ? `<p class="facts">Channel <code>${esc(w.channel_id)}</code>, subscription <code>${esc(w.subscription_id ?? '(none yet: press Reconnect)')}</code>.</p>` : ''}`
       : `<p class="muted">No <code>PUBLIC_URL</code>: webhooks are off and the server polls every 5 s instead (<code>npm run tunnel</code> prints how to get a public URL).</p>`}

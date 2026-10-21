@@ -3,7 +3,7 @@
 // subscription naming every engagement event; without one it polls the
 // same reads the earlier steps make and reports what changed.
 import { randomBytes, randomUUID } from 'node:crypto';
-import type { Api } from '../lib/abillio.ts';
+import { AbillioError, type Api } from '../lib/abillio.ts';
 import { appendEvent, idempotencyKeyFor, type Keyed, type State, type Store, type StoredEvent } from '../lib/store.ts';
 import { readSession } from './02-onboard.ts';
 import { readInvoice, readPayout } from './04-pay.ts';
@@ -30,8 +30,14 @@ export const SUBSCRIBED_EVENTS = [
 // replays under its own key.
 export const WEBHOOK_ACTIONS = { channel: 'webhook:channel', subscription: 'webhook:subscription' } as const;
 
-// Connecting is up to three calls, and each answer is stored as it comes, so
-// a press after a partial failure carries on where the last one stopped:
+// The name of the channel and of its subscription. Abillio allows one channel
+// of a kind by a name on an account, which is how a connect finds the channel
+// an earlier one made (adoptChannel).
+export const CHANNEL_NAME = 'gateway-example';
+
+// Connecting is up to three calls (five when it adopts a channel), and each
+// answer is stored as it comes, so a press after a partial failure carries on
+// where the last one stopped:
 // - the channel. What its POST sends (the destination and a secret generated
 //   here) is stored before the first call and re-sent as it is: under a kept
 //   key another secret or destination would be another request, which
@@ -46,7 +52,9 @@ export const WEBHOOK_ACTIONS = { channel: 'webhook:channel', subscription: 'webh
 //   press sends it under a fresh key, like the test delivery: there is nothing
 //   to replay, and going back to an earlier URL always moves the channel. A
 //   channel this press created already points here, enabled, unless a
-//   replayed create brought back an older URL;
+//   replayed create brought back an older URL. A name the account already
+//   holds is a channel an earlier connect made, which this press adopts
+//   (adoptChannel) instead of failing;
 // - the subscription naming every event, for the stored channel.
 export async function connectWebhooks(api: Api, keyed: Keyed, store: Store, publicUrl: string, secret: string = randomBytes(32).toString('hex')): Promise<void> {
   const state = store.load();
@@ -56,13 +64,20 @@ export async function connectWebhooks(api: Api, keyed: Keyed, store: Store, publ
   if (!webhook) {
     const fresh = { url, secret };
     const request = store.update(s => { s.webhook_request ??= fresh; }).webhook_request ?? fresh;
-    const channel = await keyed(
-      state,
-      WEBHOOK_ACTIONS.channel,
-      () => api<{ id: string }>('POST', '/accounts/notifications/channels/', { name: 'gateway-example', kind: 'webhook', destination: request.url, secret: request.secret, is_enabled: true }, { idempotencyKey: idempotencyKeyFor(state, WEBHOOK_ACTIONS.channel) }),
-      { onRefused: s => { s.webhook_request = null; } },
-    );
-    const created = { channel_id: channel.id, subscription_id: null, secret: request.secret, url: request.url };
+    let created: NonNullable<State['webhook']>;
+    try {
+      const channel = await keyed(
+        state,
+        WEBHOOK_ACTIONS.channel,
+        () => api<{ id: string }>('POST', '/accounts/notifications/channels/', { name: CHANNEL_NAME, kind: 'webhook', destination: request.url, secret: request.secret, is_enabled: true }, { idempotencyKey: idempotencyKeyFor(state, WEBHOOK_ACTIONS.channel) }),
+        { onRefused: s => { s.webhook_request = null; } },
+      );
+      created = { channel_id: channel.id, subscription_id: null, secret: request.secret, url: request.url };
+    } catch (err) {
+      // Abillio's own 409 (not its idempotency layer's): the name is taken.
+      if (!(err instanceof AbillioError && err.status === 409 && err.verified)) throw err;
+      created = await adoptChannel(api, url, secret, err);
+    }
     webhook = store.update(s => { s.webhook ??= created; }).webhook ?? created;
   }
   if (stored || webhook.url !== url) {
@@ -72,7 +87,7 @@ export async function connectWebhooks(api: Api, keyed: Keyed, store: Store, publ
   }
   if (!webhook.subscription_id) {
     const { channel_id } = webhook;
-    const subscription = await keyed(state, WEBHOOK_ACTIONS.subscription, () => api<{ id: string }>('POST', '/accounts/notifications/subscriptions/', { name: 'gateway-example', channel_uuids: [channel_id], event_types: SUBSCRIBED_EVENTS }, { idempotencyKey: idempotencyKeyFor(state, WEBHOOK_ACTIONS.subscription) }));
+    const subscription = await keyed(state, WEBHOOK_ACTIONS.subscription, () => api<{ id: string }>('POST', '/accounts/notifications/subscriptions/', { name: CHANNEL_NAME, channel_uuids: [channel_id], event_types: SUBSCRIBED_EVENTS }, { idempotencyKey: idempotencyKeyFor(state, WEBHOOK_ACTIONS.subscription) }));
     store.update(s => {
       if (s.webhook?.channel_id !== channel_id) return;
       s.webhook.subscription_id = subscription.id;
@@ -80,6 +95,29 @@ export async function connectWebhooks(api: Api, keyed: Keyed, store: Store, publ
       s.webhook_request = null;
     });
   }
+}
+
+// The account already holds a webhook channel by this name: one an earlier
+// connect of this sample made, whose state is gone (a fresh data/state.json,
+// a redeploy without its volume, another copy of the sample on the same
+// account), while the channel, like its subscription, outlives a sandbox reset.
+// The listed channel by that name is adopted, without a request of its own to
+// store: Abillio never returns a secret, so it is pointed here with a new one
+// and enabled, the PATCH Reconnect sends, under a fresh key. Every
+// subscription delivers its own copy of an event, so the enabled one that
+// already delivers to it is kept, and connectWebhooks creates one only when
+// none does. What is returned is stored only after both reads: a press that
+// stops in between leaves nothing behind, and the next one adopts again. A 409
+// whose channel is not on the list is not this case, and is thrown as it came.
+// Names are unique per account and kind, so one page of each list will do.
+async function adoptChannel(api: Api, url: string, secret: string, conflict: AbillioError): Promise<NonNullable<State['webhook']>> {
+  const channels = await api<{ items: { id: string; name: string; kind: string }[] }>('GET', '/accounts/notifications/channels/?kind=webhook&limit=200');
+  const channel = channels.items.find(c => c.name === CHANNEL_NAME && c.kind === 'webhook');
+  if (!channel) throw conflict;
+  await api('PATCH', `/accounts/notifications/channels/${encodeURIComponent(channel.id)}`, { destination: url, secret, is_enabled: true }, { idempotencyKey: randomUUID() });
+  const subscriptions = await api<{ items: { id: string; channel_ids: string[] }[] }>('GET', '/accounts/notifications/subscriptions/?enabled=true&limit=200');
+  const subscription = subscriptions.items.find(sub => sub.channel_ids.includes(channel.id));
+  return { channel_id: channel.id, subscription_id: subscription?.id ?? null, secret, url };
 }
 
 export async function sendTestDelivery(api: Api, channelId: string): Promise<void> {

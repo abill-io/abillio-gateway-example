@@ -40,7 +40,8 @@ account setup in a separate window.
 4. In step 4, **Add test funds to the wallet** reveals the sandbox deposit
    controls. Pay the invoice; if a payout is created, **Test payout outcomes**
    reveals the optional bank-response simulators.
-5. Step 5 shows how many updates have arrived for this walkthrough. Without
+5. Step 5 says whether webhooks are connected, and how many updates have
+   arrived for this walkthrough, by webhook or by polling. Without
    `PUBLIC_URL`, the server checks for updates automatically every five seconds.
 6. Back in step 2, **What happens later** plays what can stop a freelancer
    from being paid after setup: **Identity lapses**, **Payout method removed**
@@ -934,7 +935,7 @@ a public URL, and polling when it has none (`steps/05-events.ts`,
 **With a public URL.** Run `npm run tunnel` for the two one-liners
 (`cloudflared tunnel --url http://localhost:4000` or `ngrok http 4000`), put the
 https URL the tunnel prints in `.env` as `PUBLIC_URL`, restart, and open the
-pages at that URL. **Connect webhooks** then sends up to three calls, storing each answer
+pages at that URL. **Connect webhooks** then sends up to three calls (five when it adopts a channel, below), storing each answer
 as it comes, so a press after a partial failure carries on where the last one
 stopped. The channel, under `webhook:channel`, with a secret generated here (32
 random bytes as hex) and stored, because Abillio never returns it:
@@ -965,6 +966,23 @@ shows that the channel outlives a sandbox reset:
   "updated_at": "2026-10-19T20:47:42.636044Z"
 }
 ```
+
+A channel can also outlive what this server stored about it: a fresh
+`data/state.json`, a container that lost its volume, or another copy of the
+sample on the same account. With nothing stored, the POST then answers
+`409 conflict` (*A webhook channel named "gateway-example" already exists for
+this account.*), and the press adopts that channel instead of stopping there.
+`GET /accounts/notifications/channels/?kind=webhook&limit=200` finds it by its
+name (unique per account and kind), Reconnect's `PATCH` points it here with a
+new secret, since the one Abillio holds is never returned, and
+`GET /accounts/notifications/subscriptions/?enabled=true&limit=200` finds the
+subscription that already delivers to it. That one is kept, because every
+subscription delivers its own copy of an event; the subscription below is
+created only when none does. Nothing is stored until both reads have answered,
+so a press that stops in between leaves nothing behind and the next one adopts
+again. A 409 whose channel is not on the list is shown as Abillio said it. Two
+copies of the sample on one account share that one channel: the one that
+connected last receives the deliveries.
 
 Then the subscription, `POST /accounts/notifications/subscriptions/` under
 `webhook:subscription`, with `{ "name": "gateway-example", "channel_uuids":
@@ -1060,6 +1078,15 @@ Each connection starts with a snapshot, so an update missed during connection
 or reconnection is detected even when the event log is at its 200-entry limit.
 The visible notice and the refresh rules are described in
 [When an update arrives](#when-an-update-arrives).
+
+The step itself says where this stands: **Webhooks connected** to the
+receiver's URL, with the channel's name, or **Not connected** and the button to
+press (a channel without its subscription, or one still pointing at an earlier
+tunnel, asks for **Reconnect**); then how many updates about this walk came by
+webhook or by polling, and when the last test delivery arrived. A step 2 that
+a status check confirmed (the join page's, or the one a load of the back office
+makes) is no event, so with nothing received the step says so instead of
+waiting for one.
 
 **Without a public URL.** There is no Connect button, and every five seconds the
 server makes the same reads the steps make (`GET /onboarding/sessions/{id}`

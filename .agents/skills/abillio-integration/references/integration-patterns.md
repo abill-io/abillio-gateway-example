@@ -153,6 +153,10 @@ Read `lib/webhooks.ts`, `steps/05-events.ts` and the receiver in `server.ts`.
 
 1. Generate and securely store the signing secret before creating the channel.
    Persist the exact channel request and reuse it after an uncertain outcome.
+   A channel's name is unique per account and kind, and the channel outlives
+   a sandbox reset: when the create answers 409 for the name, adopt the listed
+   channel (point it at the receiver with a new secret) and keep a subscription
+   that already delivers to it instead of adding a second one.
 2. Verify the unmodified body bytes with HMAC-SHA256 over
    `X-Timestamp + "." + raw_body`; compare with `v1` from `X-Signature` in
    constant time. Validate the timestamp against the documented window

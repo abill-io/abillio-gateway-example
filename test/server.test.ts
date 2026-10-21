@@ -1218,6 +1218,7 @@ function fakeNotificationsApi(answer: (call: NotificationCall) => unknown = () =
   }) as Api;
   return {
     api,
+    calls: () => calls.map(c => `${c.method} ${c.path}`),
     channels: () => calls.filter(c => c.method === 'POST' && c.path === '/accounts/notifications/channels/'),
     subscriptions: () => calls.filter(c => c.method === 'POST' && c.path === '/accounts/notifications/subscriptions/'),
     moves: () => calls.filter(c => c.method === 'PATCH'),
@@ -1291,6 +1292,77 @@ test('every Reconnect of a stored channel is a PATCH under a fresh key that poin
   assert.equal(new Set(fake.moves().map(m => m.key)).size, 4, 'back to B is a new move, not a replay of the first one');
   assert.equal(store.load().webhook?.url, `${B}/webhooks/abillio`);
   assert.deepEqual(Object.keys(store.load().idempotency).filter(action => action.startsWith('webhook:patch:')), []);
+});
+
+// What Abillio answers a channel POST whose name the account already holds:
+// the channel outlived what this sample stored about it.
+const nameTaken = () => new AbillioError(409, { error: { code: 'conflict', message: 'A webhook channel named "gateway-example" already exists for this account.' } }, '');
+const CHANNEL_LIST = '/accounts/notifications/channels/?kind=webhook&limit=200';
+const SUBSCRIPTION_LIST = '/accounts/notifications/subscriptions/?enabled=true&limit=200';
+
+test('a channel name the account already holds (409): the press adopts that channel under a new secret, keeps the subscription that delivers to it or creates one, and step 5 reads connected instead of the error', async () => {
+  const channels = { items: [{ id: 'ch-ops', name: 'ops-alerts', kind: 'webhook' }, { id: 'ch-old', name: 'gateway-example', kind: 'webhook' }], count: 2, count_is_estimate: false };
+  const cases: [string, { id: string; channel_ids: string[] }[], string[], string][] = [
+    ['its subscription still delivers to it', [{ id: 'sub-ops', channel_ids: ['ch-ops'] }, { id: 'sub-old', channel_ids: ['ch-old'] }], [], 'sub-old'],
+    ['nothing delivers to it any more', [{ id: 'sub-ops', channel_ids: ['ch-ops'] }], ['POST /accounts/notifications/subscriptions/'], 'sub1'],
+  ];
+  for (const [label, subscriptions, then, subscriptionId] of cases) {
+    const fake = fakeNotificationsApi(call => {
+      if (call.method === 'POST' && call.path === '/accounts/notifications/channels/') throw nameTaken();
+      if (call.method === 'GET' && call.path === CHANNEL_LIST) return channels;
+      if (call.method === 'PATCH' && call.path === '/accounts/notifications/channels/ch-old') return { id: 'ch-old' };
+      if (call.method === 'GET' && call.path === SUBSCRIPTION_LIST) return { items: subscriptions, count: subscriptions.length, count_is_estimate: false };
+    });
+    const { app, state } = appWith(fake.api, fileLikeState(sandboxState()), A);
+    const html = await (await pressConnect(app)).text();
+    assert.deepEqual(fake.calls(), ['POST /accounts/notifications/channels/', `GET ${CHANNEL_LIST}`, 'PATCH /accounts/notifications/channels/ch-old', `GET ${SUBSCRIPTION_LIST}`, ...then], label);
+    const moved = JSON.parse(fake.moves()[0].body);
+    assert.match(moved.secret, /^[0-9a-f]{64}$/, `${label}: Abillio never returns a secret, so the adopted channel gets a new one`);
+    assert.deepEqual(state.load().webhook, { channel_id: 'ch-old', subscription_id: subscriptionId, secret: moved.secret, url: `${A}/webhooks/abillio` }, `${label}: stored with the secret the channel now signs with`);
+    assert.deepEqual([moved.destination, moved.is_enabled], [`${A}/webhooks/abillio`, true], `${label}: pointed here and enabled, as Reconnect does`);
+    if (then.length) assert.deepEqual(JSON.parse(fake.subscriptions()[0].body).channel_uuids, ['ch-old'], label);
+    assert.equal(state.load().webhook_request, null, label);
+    assert.ok(html.includes(`<b>Webhooks connected</b> to <code>${A}/webhooks/abillio</code>`), `${label}: step 5 says so`);
+    assert.ok(!html.includes('role="alert"'), `${label}: instead of the error`);
+  }
+  // A 409 whose channel is not on the list is not one to adopt: Abillio's
+  // answer is shown as it said it, and nothing is moved or stored.
+  const unlisted = fakeNotificationsApi(call => {
+    if (call.method === 'POST' && call.path === '/accounts/notifications/channels/') throw nameTaken();
+    if (call.method === 'GET' && call.path === CHANNEL_LIST) return { items: [channels.items[0]], count: 1, count_is_estimate: false };
+  });
+  const { app, state } = appWith(unlisted.api, fileLikeState(sandboxState()), A);
+  assert.match(await (await pressConnect(app)).text(), /role="alert"[^]*A webhook channel named &quot;gateway-example&quot; already exists for this account\./);
+  assert.deepEqual(unlisted.moves(), []);
+  assert.equal(state.load().webhook, null);
+});
+
+test('step 5 says whether webhooks are connected and what was received, and a step 2 the status check confirmed says so instead of waiting', async () => {
+  const hooked = (subscription_id: string | null = 'sub1', url = 'https://x/webhooks/abillio') => ({ channel_id: 'ch1', subscription_id, secret: 'a'.repeat(64), url });
+  const event = (event_type: string, via: 'webhook' | 'poll', data: Record<string, unknown>, received_at = '2026-10-21T10:00:00.000Z') => ({ received_at, event_type, data, via });
+  const connected = '<b>Webhooks connected</b> to <code>https://x/webhooks/abillio</code> (channel <code>gateway-example</code>).';
+  const cases: [string, State, string | null, string, string][] = [
+    ['a public URL and no channel', sandboxState(), 'https://x', 'Webhooks not connected.', '<b>Not connected</b> — press Connect webhooks.'],
+    ['a channel and its subscription', { ...sandboxState(), webhook: hooked() }, 'https://x', 'Webhooks connected.', `${connected} Waiting for the first webhook delivery about this walkthrough.`],
+    ['a channel whose subscription was never created', { ...sandboxState(), webhook: hooked(null) }, 'https://x', 'Webhooks not connected.', '<b>Not connected yet</b>: the channel <code>gateway-example</code> exists, but nothing is subscribed to it — press Reconnect.'],
+    // Deliveries go to the old URL, so none is awaited here.
+    ['a channel still pointing at an earlier tunnel', { ...sandboxState(), webhook: hooked('sub1', 'https://old.trycloudflare.com/webhooks/abillio') }, 'https://x', 'Webhooks point at an earlier address.',
+      '<b>Webhooks connected</b> to <code>https://old.trycloudflare.com/webhooks/abillio</code> (channel <code>gateway-example</code>), but this server now answers at <code>https://x/webhooks/abillio</code>: press Reconnect to move the channel.'],
+    ['step 2 confirmed by the status check, no channel', joinedState(), 'https://x', 'Webhooks not connected.',
+      '<b>Not connected</b> — press Connect webhooks. Step 2 was confirmed by reading the session status; webhook deliveries will appear here once connected.'],
+    ['step 2 confirmed by the status check, connected since', { ...joinedState(), webhook: hooked() }, 'https://x', 'Webhooks connected.',
+      `${connected} Step 2 was confirmed by reading the session status; webhook deliveries about this walkthrough will appear here as they arrive.`],
+    // Two about this walk, one about a demo freelancer a reset re-created, and a test delivery.
+    ['deliveries received', { ...joinedState(), webhook: hooked(), events: [event('engagement.onboarding.completed', 'webhook', { session_id: 's1' }), event('channel.test', 'webhook', {}, '2026-10-21T10:05:00.000Z'), event('engagement.invoice.paid', 'webhook', { engagement_id: 'e-demo' }), event('engagement.invoice.confirmed', 'webhook', { engagement_id: 'e1' })] }, 'https://x', '2 updates received for this walkthrough.',
+      `${connected} 2 webhook deliveries received for this walkthrough. The last test delivery arrived at 2026-10-21T10:05:00.000Z.`],
+    ['no public URL: the server polls', { ...joinedState(), events: [event('engagement.onboarding.completed', 'poll', { session_id: 's1' })] }, null, '1 update received for this walkthrough.', '1 update found by polling for this walkthrough.'],
+  ];
+  for (const [label, initial, publicUrl, hint, facts] of cases) {
+    const html = await (await appWith((async () => { throw new Error('unread'); }) as Api, memoryState(initial), publicUrl).app.request('/')).text();
+    assert.ok(html.includes(`<span class="step-hint">${hint}</span>`), `${label}: the folded step says it`);
+    assert.ok(html.includes(`<p class="facts">${facts}</p>`), label);
+    assert.ok(!html.includes('Waiting for the first update about this walkthrough.'), `${label}: never waiting for what already came, or for what cannot come`);
+  }
 });
 
 test('a poll writes back only what it found: an event the store no longer has does not come back from its older copy, and what it found about the walk left behind is not announced', async t => {
