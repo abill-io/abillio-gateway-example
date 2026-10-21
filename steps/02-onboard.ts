@@ -4,7 +4,7 @@
 // the link was minted for: the session answer carries no engagement id.
 import { createHash } from 'node:crypto';
 import type { Api } from '../lib/abillio.ts';
-import { idempotencyKeyFor, type State } from '../lib/store.ts';
+import { idempotencyKeyFor, type Requirements, type State } from '../lib/store.ts';
 
 export type JoinForm = { first_name: string; last_name: string; email: string; tax_country: string; locale: 'lv' | 'en' };
 export type OnboardingBody = { email: string; locale: 'lv' | 'en'; return_url: string; prefill: { first_name: string; last_name: string; tax_country: string } };
@@ -23,6 +23,13 @@ export function returnUrlFor(publicUrl: string | null, port: number): string {
   return `${publicUrl ?? `http://localhost:${port}`}/back`;
 }
 
+// What of an engagement's `requirements` is still open: the list while its
+// `status` is not `complete`, else null. A list Abillio could not work out
+// arrives as `null` and never comes here: it proves nothing either way.
+export function openRequirements(requirements: Requirements): Requirements | null {
+  return requirements.status === 'complete' ? null : requirements;
+}
+
 // What POST /onboarding/sessions/ sends for this form.
 export function onboardingBody(form: JoinForm, returnUrl: string): OnboardingBody {
   return {
@@ -33,15 +40,16 @@ export function onboardingBody(form: JoinForm, returnUrl: string): OnboardingBod
   };
 }
 
-// The action a mint is keyed on: the address plus a digest of the exact body.
-// The route spends the key as soon as Abillio answers (`once`): the link is
-// single-use, so every answered press mints a new one, and only a mint whose
+// The action a mint is keyed on: the address plus a digest of the exact body,
+// a first link's (`onboardingBody`) or an update link's (`updateLinkBody`,
+// steps/02b-requirements.ts). The route spends the key as soon as Abillio
+// answers (`once`): every answered press mints again, and only a mint whose
 // answer was lost keeps its key, for the identical retry to replay. Abillio
 // holds that key to the body it first saw, and a different body under it is a
 // 409 for good; with the digest a changed form is a new attempt instead. The
-// route's keyed() and startOnboarding both derive it here, so the key they
-// claim and send cannot drift apart.
-export function onboardingAction(body: OnboardingBody): string {
+// routes' keyed() and startOnboarding / startUpdate all derive it here, so the
+// key they claim and send cannot drift apart.
+export function onboardingAction(body: { email: string }): string {
   const digest = createHash('sha256').update(JSON.stringify(body)).digest('hex').slice(0, 8);
   return `onboard:${body.email.toLowerCase()}:${digest}`;
 }
