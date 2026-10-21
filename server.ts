@@ -15,6 +15,7 @@ import { Trace, trace as processTrace } from './lib/trace.ts';
 import { dedupeKey, parseDelivery, verifySignature } from './lib/webhooks.ts';
 import { checkKey, type KeyReport } from './steps/01-key.ts';
 import { findEngagement, onboardingAction, onboardingBody, readSession, returnUrlFor, startOnboarding, type JoinForm } from './steps/02-onboard.ts';
+import { REQUIREMENT_SIMULATIONS, simulateRequirement, simulateRequirementAction, startUpdate, updateLinkBody } from './steps/02b-requirements.ts';
 import { draftInvoice, findSelfClient, invoiceRequest, issueInvoice, pendingRequest } from './steps/03-issue.ts';
 import { DEFAULT_COMPANY, PAYOUT_OUTCOMES, findPayout, fundWallet, payAction, payInvoice, readInvoice, readPayout, simulateAction, simulatePayout } from './steps/04-pay.ts';
 import { WEBHOOK_ACTIONS, aboutThisWalk, connectWebhooks, pollForEvents, recordCompletion, recordPoll, sendTestDelivery, type PollResult } from './steps/05-events.ts';
@@ -107,7 +108,7 @@ export function createApp(deps: Deps): Hono {
   // `c.html` is typed `Response | Promise<Response>` (it also takes a
   // Promise<string>); a route handler returns either.
   const render = (c: { req: { path: string }; html: (s: string) => Response | Promise<Response> }, error: unknown = null) => {
-    const actionSteps: Record<string, number> = { key: 1, issue: 3, pay: 4, events: 5 };
+    const actionSteps: Record<string, number> = { key: 1, onboard: 2, issue: 3, pay: 4, events: 5 };
     const actionStep = actionSteps[c.req.path.split('/')[2] ?? ''];
     return c.html(companyPage({ state: publicState(deps.state.load()), trace: deps.trace.list(), key: lastKey, error, publicUrl: deps.publicUrl, focusStep: error ? actionStep : undefined }));
   };
@@ -180,13 +181,16 @@ export function createApp(deps: Deps): Hono {
   const joinErrorText = (err: unknown): string =>
     err instanceof AbillioError ? [`${err.code}: ${err.message}`, err.hint].filter(Boolean).join(' — ') : String(err);
 
-  // /join answers the join page's fetch in plain text; the others render the back office.
-  app.post('/join', async (c, next) => {
-    const refusal = sandboxRefusal();
-    if (refusal) return c.text(refusal, 403);
-    await next();
-  });
-  for (const path of ['/steps/issue', '/steps/pay/*', '/steps/events/*', '/reset']) {
+  // The two mints, /join and step 2's update link, answer the page's fetch in
+  // plain text; the others render the back office.
+  for (const path of ['/join', '/steps/onboard/update-link']) {
+    app.post(path, async (c, next) => {
+      const refusal = sandboxRefusal();
+      if (refusal) return c.text(refusal, 403);
+      await next();
+    });
+  }
+  for (const path of ['/steps/onboard/simulate', '/steps/issue', '/steps/pay/*', '/steps/events/*', '/reset']) {
     app.post(path, async (c, next) => {
       const refusal = sandboxRefusal();
       if (refusal) return render(c, new Error(refusal));
@@ -304,6 +308,59 @@ export function createApp(deps: Deps): Hono {
     try {
       const { status, engagement } = await checkStatus(f);
       return c.json({ ...status, engagement_id: engagement?.id ?? f.engagement_id });
+    } catch (err) {
+      return c.text(joinErrorText(err), 502);
+    }
+  });
+
+  // Step 2b. A requirement simulation is an event, like the payout's: its key
+  // is spent on any settled answer (`once`), so the same button pressed again
+  // after the freelancer has put it right plays again instead of replaying.
+  // Abillio answers with the engagement as the company reads it, and what it
+  // says is stored only onto the walk the press acted on. A replayed answer
+  // (after a lost one) can be older than the engagement; while something is
+  // open every load reads the engagement again (checkStatus), so it does not
+  // stay.
+  app.post('/steps/onboard/simulate', async c => {
+    const form = Object.fromEntries((await c.req.formData()).entries()) as Record<string, string>;
+    const simulation = REQUIREMENT_SIMULATIONS.find(s => s.outcome === form.outcome);
+    const state = deps.state.load();
+    const engagementId = state.freelancer?.engagement_id;
+    if (!simulation || !engagementId) return render(c, new Error('Pick one of the three outcomes once a freelancer has joined (step 2).'));
+    try {
+      const engagement = await keyed(state, simulateRequirementAction(engagementId, simulation), () => simulateRequirement(deps.api, state, engagementId, simulation), { once: true });
+      deps.state.update(s => {
+        if (s.freelancer?.engagement_id !== engagementId) return;
+        s.freelancer.can_be_paid = engagement.can_be_paid;
+        s.freelancer.engagement_status = engagement.status;
+        s.freelancer.requirements = engagement.requirements;
+      });
+      return render(c);
+    } catch (err) { return render(c, err); }
+  });
+
+  // Send a new link: the join page's mint for the address already stored,
+  // with `purpose: "update"` (steps/02b-requirements.ts). Keyed and spent like
+  // the first mint (`once`): Abillio hands back the same link while it is
+  // open, and a new one once it is spent. The new session replaces the stored
+  // one on the same freelancer, so the status check, the poll and the
+  // completion event follow it; the engagement, `can_be_paid` and what is open
+  // stay until Abillio says otherwise. The answer, with the link, goes only to
+  // the browser that pressed, as /join's does, and a refusal comes back as
+  // text for the note under the button.
+  app.post('/steps/onboard/update-link', async c => {
+    const state = deps.state.load();
+    const f = state.freelancer;
+    if (!f) return c.text('Nobody has joined yet: there is no address to send a link to.', 409);
+    const body = updateLinkBody(f.email, returnUrlFor(deps.publicUrl, deps.port));
+    try {
+      const session = await keyed(state, onboardingAction(body), () => startUpdate(deps.api, state, body), { once: true });
+      deps.state.update(s => {
+        if (!s.freelancer || s.freelancer.email.toLowerCase() !== f.email.toLowerCase()) return;
+        s.freelancer.session_id = session.session_id;
+        s.freelancer.session_url = session.url;
+      });
+      return c.json(session);
     } catch (err) {
       return c.text(joinErrorText(err), 502);
     }

@@ -7,7 +7,7 @@ import type { Api } from '../lib/abillio.ts';
 // (`@requires_action(...)` in the Abillio backend), in the order the steps
 // use them.
 export const NEEDED_ACTIONS = [
-  'freelancers.invite',                  // POST /onboarding/sessions/ (step 2)
+  'freelancers.invite',                  // POST /onboarding/sessions/ (step 2, and step 2b's update link)
   'freelancers.view',                    // GET /onboarding/sessions/{id} (step 2)
   'engagements.view',                    // GET /engagements/?search=, the engagement lookup (step 2)
   'clients.view',                        // GET /accounts/clients/, the self-client lookup (step 3)
@@ -17,7 +17,7 @@ export const NEEDED_ACTIONS = [
   'wallet.payment.execute',              // POST /accounts/wallet/pay-invoice/ (step 4)
   'payouts.view',                        // GET /engagements/{id}/payouts/, the payout lookup and read-back (steps 4, 5)
   'invoices.view',                       // GET /accounts/invoices/{id}/, the invoice read-back (steps 4, 5)
-  'sandbox.simulate',                    // simulate-deposit, payout outcomes (step 4), reset (Start over)
+  'sandbox.simulate',                    // requirement outcomes (step 2b), simulate-deposit, payout outcomes (step 4), reset (Start over)
   'notifications.channels.manage',       // POST /accounts/notifications/channels/ (step 5)
   'notifications.subscriptions.manage',  // POST /accounts/notifications/subscriptions/ (step 5)
 ];
