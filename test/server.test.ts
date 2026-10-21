@@ -473,6 +473,59 @@ test('a refused update link comes back as text for the note under the button and
   assert.deepEqual([nobody.status, await nobody.text(), called], [409, 'Nobody has joined yet: there is no address to send a link to.', false]);
 });
 
+test('while what a simulation reopened is open, each load follows the engagement: what is still open stays, a list that reads complete makes step 2 done again (a freelancer Abillio could pay all along included), and neither a list Abillio could not work out nor a first onboarding is followed', async () => {
+  // A withdrawn mandate, and the update link already minted (s2).
+  const update = (): State => {
+    const s = reopenedState('mandate');
+    s.freelancer = { ...s.freelancer!, session_id: 's2' };
+    return s;
+  };
+  const complete: Requirements = { status: 'complete', due: [], upcoming: [] };
+  const cases: { label: string; initial: State; listed: Requirements | null; meanwhile?: (store: ReturnType<typeof fileLikeState>) => void; requirements: Requirements | null; step2: string }[] = [
+    { label: 'the mandate is still withdrawn', initial: update(), listed: reopenedList('mandate'), requirements: reopenedList('mandate'), step2: 'In progress' },
+    { label: 'the freelancer granted it again', initial: update(), listed: complete, requirements: null, step2: 'Done' },
+    { label: 'Abillio could not work the list out', initial: update(), listed: null, requirements: reopenedList('mandate'), step2: 'In progress' },
+    { label: 'a simulation stored a newer list while the reads were out', initial: update(), listed: complete, meanwhile: store => store.update(s => { s.freelancer!.requirements = reopenedList('payout_method'); }), requirements: reopenedList('payout_method'), step2: 'In progress' },
+    { label: 'a first onboarding: nothing was reopened, so the list is not kept', initial: notYetPayable(), listed: reopenedList('identity_verification'), requirements: null, step2: 'In progress' },
+  ];
+  for (const { label, initial, listed, meanwhile, requirements, step2 } of cases) {
+    const store = fileLikeState(initial);
+    const calls: string[] = [];
+    const api = (async (method: string, path: string) => {
+      calls.push(`${method} ${path}`);
+      if (path.startsWith('/onboarding/sessions/')) {
+        meanwhile?.(store);
+        return { state: 'in_progress', can_be_paid: initial.freelancer!.can_be_paid, purpose: path.endsWith('/s2') ? 'update' : 'onboarding', requirements: [] };
+      }
+      if (path === '/engagements/?search=anna%40example.com') return { count: 1, items: [engagementOut(listed, initial.freelancer!.can_be_paid)] };
+      throw new Error(path);
+    }) as Api;
+    const html = await (await appWith(api, store, 'https://x').app.request('/')).text();
+    assert.deepEqual(calls, [`GET /onboarding/sessions/${initial.freelancer!.session_id}`, ENGAGEMENT_READ], `${label}: the two reads, though Abillio may be able to pay them`);
+    assert.deepEqual(store.load().freelancer?.requirements, requirements, label);
+    assert.equal(step2Status(html), step2, label);
+  }
+});
+
+test("an update link's completion heard by webhook closes what was reopened; a first link's completion delivered late does not", async () => {
+  const v = JSON.parse(readFileSync(new URL('./vectors.json', import.meta.url), 'utf8')).webhook;
+  const initial = reopenedState('mandate');
+  initial.webhook = { channel_id: 'ch1', subscription_id: 'sub1', secret: v.secret, url: 'https://x/webhooks/abillio' };
+  const { app, state } = appWith((async () => { throw new Error('a delivery reads nothing'); }) as Api, fileLikeState(initial), 'https://x', () => {}, () => Number(v.timestamp) * 1000 + 1000);
+  const deliver = (session_id: string, purpose: string) => {
+    const raw = JSON.stringify({ event: 'engagement.onboarding.completed', timestamp: '2026-10-21T10:00:00.000000Z', account_id: 'a1', account_name: 'Acme', data: { session_id, freelancer_account_id: 'f1', freelancer_name: 'Anna Ozola', engagement_id: 'e1', purpose, can_be_paid: true } });
+    const v1 = createHmac('sha256', v.secret).update(`${v.timestamp}.`).update(raw).digest('hex');
+    return app.request('/webhooks/abillio', { method: 'POST', body: raw, headers: { 'content-type': 'application/json', 'x-timestamp': v.timestamp, 'x-signature': `t=${v.timestamp},v1=${v1}` } });
+  };
+  // The first link (s1) is still the stored session, and its completion arrives late.
+  assert.equal((await deliver('s1', 'onboarding')).status, 200);
+  assert.deepEqual(state.load().freelancer?.requirements, reopenedList('mandate'), 'a first link says nothing about what reopened after it');
+  state.update(s => { s.freelancer!.session_id = 's2'; });
+  assert.equal((await deliver('s2', 'update')).status, 200);
+  assert.equal(state.load().freelancer?.requirements, null);
+  assert.equal(step2Status(await (await app.request('/')).text()), 'Done');
+});
+
 // --- Step 3 -------------------------------------------------------------------
 
 type App = ReturnType<typeof appWith>['app'];

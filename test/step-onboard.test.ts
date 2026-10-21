@@ -36,6 +36,11 @@ test('readSession returns the status rows; findEngagement matches the counterpar
   }) as Api;
   const status = await readSession(api, 's1');
   assert.equal(status.requirements[0].key, 'kyc');
-  assert.deepEqual(await findEngagement(api, 'anna@example.com'), { id: 'e1', status: 'invited', can_be_paid: false, servicing_company_slug: 'abillio-ks' });
+  assert.deepEqual(await findEngagement(api, 'anna@example.com'), { id: 'e1', status: 'invited', can_be_paid: false, servicing_company_slug: 'abillio-ks', requirements: null });
+  // A list that reads `complete` comes back as listed: the status check tells
+  // a closed list from one Abillio could not work out (`null`).
+  const closed = { status: 'complete', due: [], upcoming: [] };
+  const listed = (async () => ({ count: 1, items: [{ id: 'e1', status: 'active', counterparty: { email: 'anna@example.com', servicing_company: null }, compliance: { can_be_paid: true }, requirements: closed }] })) as Api;
+  assert.deepEqual((await findEngagement(listed, 'anna@example.com'))?.requirements, closed);
   assert.equal(await findEngagement((async () => ({ count: 0, items: [] })) as Api, 'x@example.com'), null);
 });

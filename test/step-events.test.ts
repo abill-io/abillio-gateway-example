@@ -158,3 +158,20 @@ test('recordPoll appends an event that carries no dedupe key, even when a stored
   assert.equal(recordPoll(state, { events: [keyless('engagement.payout.completed')], changes: [] }).events.length, 1);
   assert.deepEqual(state.events.map(e => e.event_type), ['engagement.invoice.paid', 'engagement.payout.completed']);
 });
+
+test("the poll reads an update link's completion off its state, not off can_be_paid, and names its purpose", async () => {
+  // A withdrawn mandate: payable all along, the update link (s2) still open.
+  const state = defaultState();
+  state.freelancer = { email: 'anna@example.com', session_id: 's2', session_url: 'https://new.abillio.dev/s/t2', engagement_id: 'e1', engagement_status: 'active', can_be_paid: true, servicing_company_slug: 'abillio-ks', requirements: { status: 'blocked', due: [{ kind: 'mandate', state: 'due', blocks: ['invoices'], detail: 'revoked', due_at: null, resource_id: 'e1' }], upcoming: [] } };
+  let session = { state: 'in_progress', can_be_paid: true, purpose: 'update', requirements: [] };
+  const api = (async (_m: string, path: string) => {
+    if (path === '/onboarding/sessions/s2') return session;
+    throw new Error(path);
+  }) as Api;
+  assert.deepEqual((await pollForEvents(api, state)).events, [], 'payable, but the link still has the mandate to grant: no completion');
+  session = { ...session, state: 'complete' };
+  const found = await pollForEvents(api, state);
+  assert.deepEqual(found.events.map(e => [e.event_type, e.data]), [['engagement.onboarding.completed', { session_id: 's2', can_be_paid: true, purpose: 'update' }]]);
+  recordPoll(state, found);
+  assert.equal(state.freelancer.requirements, null, 'recorded, it closes what was reopened');
+});

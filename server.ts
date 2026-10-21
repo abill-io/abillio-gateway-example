@@ -14,7 +14,7 @@ import { appendEvent, defaultState, forgetIdempotencyKey, loadState, updateState
 import { Trace, trace as processTrace } from './lib/trace.ts';
 import { dedupeKey, parseDelivery, verifySignature } from './lib/webhooks.ts';
 import { checkKey, type KeyReport } from './steps/01-key.ts';
-import { findEngagement, onboardingAction, onboardingBody, readSession, returnUrlFor, startOnboarding, type JoinForm } from './steps/02-onboard.ts';
+import { findEngagement, onboardingAction, onboardingBody, openRequirements, readSession, returnUrlFor, setupDone, startOnboarding, type JoinForm } from './steps/02-onboard.ts';
 import { REQUIREMENT_SIMULATIONS, simulateRequirement, simulateRequirementAction, startUpdate, updateLinkBody } from './steps/02b-requirements.ts';
 import { draftInvoice, findSelfClient, invoiceRequest, issueInvoice, pendingRequest } from './steps/03-issue.ts';
 import { DEFAULT_COMPANY, PAYOUT_OUTCOMES, findPayout, fundWallet, payAction, payInvoice, readInvoice, readPayout, simulateAction, simulatePayout } from './steps/04-pay.ts';
@@ -201,16 +201,16 @@ export function createApp(deps: Deps): Hono {
   // Liveness for the container orchestrator: no Abillio call, no state read.
   app.get('/healthz', c => c.text('ok'));
 
-  // A status check: the session's answer and, once the link is opened, the
-  // engagement's row, and what they change of the stored freelancer. The join
-  // page's poll makes one every 3 s, and the back office one on load. Either
-  // read can fail (a 401, a network blip); each caller says what that means
-  // for its page.
+  // A status check: the session's answer and, once the freelancer has agreed,
+  // the engagement's row, and what they change of the stored freelancer. The
+  // join page's poll makes one every 3 s, the back office one on load, and
+  // step 2's update-link follow one every 3 s. Either read can fail (a 401, a
+  // network blip); each caller says what that means for its page.
   async function checkStatus(f: NonNullable<State['freelancer']>) {
     const status = await readSession(deps.api, f.session_id);
-    // Abillio knows the engagement from the moment the link is opened, still
-    // `invited`, and its status moves as the freelancer goes on (`active`
-    // once they can be paid), so from then on every check reads it too.
+    // Abillio knows the engagement from when they agree, still `invited`, and
+    // its status moves as the freelancer goes on (`active` once they can be
+    // paid), so from then on every check reads it too.
     const engagement = status.state === 'awaiting_freelancer' ? null : await findEngagement(deps.api, f.email);
     // Only what the answers change from what this check started with is
     // written: a completion stored while the reads were out
@@ -220,28 +220,43 @@ export function createApp(deps: Deps): Hono {
     if (engagement && engagement.id !== f.engagement_id) learned.engagement_id = engagement.id;
     if (engagement && engagement.status !== f.engagement_status) learned.engagement_status = engagement.status;
     if (engagement && engagement.servicing_company_slug !== f.servicing_company_slug) learned.servicing_company_slug = engagement.servicing_company_slug;
+    // What a simulation reopened (step 2b) is followed on the engagement's own
+    // list until it closes: each check keeps what is still open, and nothing
+    // once the list reads `complete`. A list Abillio could not work out
+    // (`null`) proves nothing and changes nothing, and a walk with nothing
+    // reopened is not followed at all: a first onboarding goes by
+    // `can_be_paid`.
+    if (engagement?.requirements && f.requirements && engagement.id === f.engagement_id) {
+      const open = openRequirements(engagement.requirements);
+      if (JSON.stringify(open) !== JSON.stringify(f.requirements)) learned.requirements = open;
+    }
     if (Object.keys(learned).length) {
       deps.state.update(s => {
         // Only for the session this check read: a newer join replaced it.
         if (!s.freelancer || s.freelancer.session_id !== f.session_id) return;
         // Steps 3 and 4 belong to one engagement; another one starts them over.
         if (learned.engagement_id && s.freelancer.engagement_id !== learned.engagement_id) { s.invoice = null; s.invoice_request = null; s.payout = null; }
-        Object.assign(s.freelancer, learned);
+        const { requirements, ...rest } = learned;
+        Object.assign(s.freelancer, rest);
+        // The list only over the one this check compared: a simulation
+        // pressed while the reads were out stored a newer one.
+        if (requirements !== undefined && JSON.stringify(s.freelancer.requirements) === JSON.stringify(f.requirements)) s.freelancer.requirements = requirements;
       });
     }
     return { status, engagement };
   }
 
-  // While the stored freelancer cannot be paid yet, every load makes that
-  // status check too: the join page's poll stores the answer only while the
-  // join page is open, and on a public URL with no webhook connected nothing
-  // else would. Only once the key is checked, as the page counts it
-  // (boundAccount). A failed read does not fail the page: it renders what is
-  // stored, and the trace shows the refused call.
+  // Until step 2 is done (the stored freelancer cannot be paid yet, or what a
+  // simulation reopened is still open), every load makes that status check
+  // too: the join page's poll stores the answer only while the join page is
+  // open, and on a public URL with no webhook connected nothing else would.
+  // Only once the key is checked, as the page counts it (boundAccount). A
+  // failed read does not fail the page: it renders what is stored, and the
+  // trace shows the refused call.
   app.get('/', async c => {
     const s = deps.state.load();
     const f = s.freelancer;
-    if (f?.can_be_paid === false && boundAccount(s)) {
+    if (f && !setupDone(f) && boundAccount(s)) {
       try {
         await checkStatus(f);
       } catch {

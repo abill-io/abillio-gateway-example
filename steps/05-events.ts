@@ -112,13 +112,19 @@ export function aboutThisWalk(state: State, event: StoredEvent): boolean {
 // event, so the back office learns it without the join page open. The
 // engagement's status read before it describes the engagement before the
 // completion (`invited`, not `active`), so it is dropped until a check reads
-// it again.
+// it again. While something a simulation reopened is open (step 2b), only an
+// update link's completion counts, and it closes the list: requirements
+// reopen only on an active engagement, whose links are update links, so a
+// first link's completion that arrives late (a slow delivery, a poll of a
+// session still stored) says nothing about them.
 export function recordCompletion(state: State, event: StoredEvent): void {
   const f = state.freelancer;
-  if (!f || f.can_be_paid || event.event_type !== 'engagement.onboarding.completed') return;
+  if (!f || event.event_type !== 'engagement.onboarding.completed') return;
   if (event.data.session_id !== f.session_id || event.data.can_be_paid !== true) return;
+  if (f.requirements ? event.data.purpose !== 'update' : f.can_be_paid) return;
   f.can_be_paid = true;
   f.engagement_status = null;
+  f.requirements = null;
 }
 
 // The webhook's name for a payout's move, as the backend announces it: a
@@ -156,11 +162,15 @@ export async function pollForEvents(api: Api, state: State, now: () => number = 
   };
   // The session is read until its completion is recorded, by a poll or by a
   // webhook (both carry the session id), and not at all for a freelancer
-  // stored without one.
+  // stored without one. Its `state` says when the link has done its job, as
+  // Abillio's own event does: for a first link that is the moment
+  // `can_be_paid` turns true, while an update link can be payable long before
+  // it is done (a mandate to grant again, say). The event carries what the
+  // session says, its `purpose` included.
   const completed = state.events.some(e => e.event_type === 'engagement.onboarding.completed' && e.data.session_id === f.session_id);
   if (f.session_id && !completed) {
     const session = await tryRead('the session read', () => readSession(api, f.session_id));
-    if (session?.can_be_paid) found.events.push(event('engagement.onboarding.completed', { session_id: f.session_id, can_be_paid: true, purpose: 'onboarding' }, f.session_id));
+    if (session?.state === 'complete') found.events.push(event('engagement.onboarding.completed', { session_id: f.session_id, can_be_paid: session.can_be_paid, purpose: session.purpose }, f.session_id));
   }
   const engagementId = f.engagement_id;
   const invoice = state.invoice;

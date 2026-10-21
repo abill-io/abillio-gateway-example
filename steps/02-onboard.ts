@@ -17,7 +17,7 @@ export type SessionStatus = {
 };
 
 type SessionOut = { session_id: string; url: string; status: string; purpose: string };
-type EngagementRow = { id: string; status: string; counterparty: { email: string; servicing_company: { slug: string } | null }; compliance: { can_be_paid: boolean } };
+type EngagementRow = { id: string; status: string; counterparty: { email: string; servicing_company: { slug: string } | null }; compliance: { can_be_paid: boolean }; requirements?: Requirements | null };
 
 export function returnUrlFor(publicUrl: string | null, port: number): string {
   return `${publicUrl ?? `http://localhost:${port}`}/back`;
@@ -68,7 +68,7 @@ export async function findEngagement(api: Api, email: string) {
   const page = await api<{ items: EngagementRow[] }>('GET', `/engagements/?search=${encodeURIComponent(email)}`);
   const row = page.items.find(item => item.counterparty.email.toLowerCase() === email.toLowerCase());
   if (!row) return null;
-  return { id: row.id, status: row.status, can_be_paid: row.compliance.can_be_paid, servicing_company_slug: row.counterparty.servicing_company?.slug ?? null };
+  return { id: row.id, status: row.status, can_be_paid: row.compliance.can_be_paid, servicing_company_slug: row.counterparty.servicing_company?.slug ?? null, requirements: row.requirements ?? null };
 }
 
 // Step 2 is done once Abillio says the freelancer can be paid and nothing a
