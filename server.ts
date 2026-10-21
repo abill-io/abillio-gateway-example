@@ -110,7 +110,7 @@ export function createApp(deps: Deps): Hono {
   const render = (c: { req: { path: string }; html: (s: string) => Response | Promise<Response> }, error: unknown = null) => {
     const actionSteps: Record<string, number> = { key: 1, onboard: 2, issue: 3, pay: 4, events: 5 };
     const actionStep = actionSteps[c.req.path.split('/')[2] ?? ''];
-    return c.html(companyPage({ state: publicState(deps.state.load()), trace: deps.trace.list(), key: lastKey, error, publicUrl: deps.publicUrl, focusStep: error ? actionStep : undefined }));
+    return c.html(companyPage({ state: publicState(deps.state.load()), trace: deps.trace.list(), key: lastKey, error, publicUrl: deps.publicUrl, focusStep: error ? actionStep : undefined, abillioOrigin: deps.abillioOrigin() }));
   };
 
   // One keyed call. The key is claimed in the store BEFORE the call, so an

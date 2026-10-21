@@ -1,6 +1,8 @@
-import type { State } from '../lib/store.ts';
+import type { RequirementItem, State } from '../lib/store.ts';
 import type { TraceEntry } from '../lib/trace.ts';
 import type { KeyReport } from '../steps/01-key.ts';
+import { setupDone } from '../steps/02-onboard.ts';
+import { REQUIREMENT_SIMULATIONS, type RequirementSimulation } from '../steps/02b-requirements.ts';
 import { issueStage, pendingRequest } from '../steps/03-issue.ts';
 import { DEFAULT_COMPANY, PAYOUT_OUTCOMES } from '../steps/04-pay.ts';
 import { aboutThisWalk } from '../steps/05-events.ts';
@@ -8,7 +10,10 @@ import { latestUpdate } from '../lib/updates.ts';
 import { esc, page } from './layout.ts';
 import { errorBox, jsonBlock, rail, stateTag, stepPanel, stepStatuses, tracePanel, type StepStatus } from './partials.ts';
 
-export type CompanyPageInput = { state: State; trace: TraceEntry[]; key: KeyReport | null; error: unknown; publicUrl: string | null; focusStep?: number };
+// `abillioOrigin` is the origin of the stored onboarding link (server.ts's
+// deps.abillioOrigin), for step 2's update-link form: popup.js trusts a
+// message from there only.
+export type CompanyPageInput = { state: State; trace: TraceEntry[]; key: KeyReport | null; error: unknown; publicUrl: string | null; focusStep?: number; abillioOrigin?: string | null };
 
 function integrationDetails(body: string): string {
   return `<details class="integration-details"><summary>Integration details</summary>${body}</details>`;
@@ -44,20 +49,77 @@ export function keyPanel(key: KeyReport | null, state: State, status: StepStatus
   `, expanded);
 }
 
-export function onboardingPanel(state: State, publicUrl: string | null, status: StepStatus = stepStatuses(state)[1], expanded?: boolean): string {
+// What a requirement is called on the page: the requirements registry's own
+// names. The kinds are an open list, so one this sample does not know is said
+// by its own name.
+const REQUIREMENT_NAMES = new Map([
+  ['identity_verification', 'identity verification'],
+  ['payout_method', 'payout method'],
+  ['membership_fee', 'membership fee'],
+  ['tax_residency', 'tax residency'],
+  ['mandate', 'invoicing mandate'],
+  ['document_signature', 'document signature'],
+  ['billing_details', 'billing details'],
+]);
+
+// One open item in plain words: what, and Abillio's word for where it stands
+// (`detail`, a word for a human, never branched on), with the deadline of one
+// still ahead. `detail` and `due_at` are optional in the schema. The caller
+// escapes the line.
+function plainRequirement(item: RequirementItem): string {
+  const what = REQUIREMENT_NAMES.get(item.kind) ?? item.kind.replaceAll('_', ' ');
+  const how = [(item.detail ?? '').replaceAll('_', ' '), item.state === 'upcoming' && item.due_at ? `due ${item.due_at.slice(0, 10)}` : ''].filter(Boolean).join(', ');
+  return how ? `${what} (${how})` : what;
+}
+
+// Step 2's sandbox buttons, one per outcome the requirement simulator plays.
+const SIMULATION_LABELS: Record<RequirementSimulation['outcome'], string> = {
+  expired: 'Identity lapses',
+  removed: 'Payout method removed',
+  revoked: 'Mandate withdrawn',
+};
+
+export function onboardingPanel(state: State, publicUrl: string | null, status: StepStatus = stepStatuses(state)[1], expanded?: boolean, abillioOrigin: string | null = null): string {
   const f = state.freelancer;
-  const hint = f ? `${f.email} · ${f.can_be_paid ? 'Ready to be paid' : 'Setup in progress'}` : 'Try the signup page your freelancers would use.';
+  const done = setupDone(f);
+  // What a simulation reopened (step 2b), due first, in plain words.
+  const open = f?.requirements ? [...f.requirements.due, ...f.requirements.upcoming].map(plainRequirement).join('; ') : '';
+  const hint = f ? `${f.email} · ${done ? 'Ready to be paid' : open ? 'Setup needs attention' : 'Setup in progress'}` : 'Try the signup page your freelancers would use.';
   const signup = `<a class="button-link${f ? ' secondary' : ''}" href="/join">${f ? 'Open freelancer signup' : 'Register & connect with Abillio'}</a>`;
   // With a public URL the server does not poll: until webhooks are connected,
   // the freelancer's progress reaches this page only when it is opened (the
   // status check server.ts makes on load).
-  const unheard = publicUrl && !state.webhook && f && !f.can_be_paid ? `<p class="muted">Webhooks are not connected yet, so this page learns about the freelancer's progress only when it is opened. Connect them in step 5 to hear about it as it happens.</p>` : '';
+  const unheard = publicUrl && !state.webhook && f && !done ? `<p class="muted">Webhooks are not connected yet, so this page learns about the freelancer's progress only when it is opened. Connect them in step 5 to hear about it as it happens.</p>` : '';
+  const copy = !f
+    ? 'Now try the freelancer’s side. They sign up on your company’s page, then connect with Abillio to complete their account and payout setup.'
+    : done
+      ? 'Freelancer setup is complete. Continue with the invoice in step 3.'
+      : open
+        ? 'Something the freelancer had set up needs doing again. Send them a new link: Abillio’s window asks only for what is listed, and this step is done again once they finish it.'
+        : 'The freelancer has started connecting with Abillio. Their setup needs to be completed before they can receive payments.';
+  const facts = f
+    ? `<p class="facts"><b>${esc(f.email)}</b> — ${done ? 'Abillio confirms this freelancer is ready to be paid.' : open ? `Setup needs attention: ${esc(open)}.` : 'Setup is in progress. Finish the Abillio window already opened for this freelancer; their status updates automatically.'}</p>`
+    : '<p class="muted">Nobody has joined yet.</p>';
+  // Send a new link opens Abillio's window from the click (public/popup.js),
+  // as the join page's Continue does; the link reaches only that browser.
+  const resend = f && open
+    ? `<form method="post" action="/steps/onboard/update-link" id="update-link" data-origin="${esc(abillioOrigin ?? '')}"><button${live(state)}>Send a new link</button></form>
+    <p class="step-help">Opens Abillio’s window for ${esc(f.email)}, where they complete only what is listed.</p>
+    <p id="popup-note" class="note" aria-live="polite"></p>`
+    : '';
+  // Optional sandbox controls, like step 4's payout outcomes: each plays one
+  // way a freelancer who could be paid stops counting as set up (step 2b).
+  const later = done
+    ? `<details class="sandbox-tools"><summary>What happens later</summary><p class="muted">Optional sandbox controls: make something the freelancer set up stop counting, as it can in production, then send them a new link to put it right.</p>
+    <form method="post" action="/steps/onboard/simulate" class="outcomes">${REQUIREMENT_SIMULATIONS.map(s => `<button name="outcome" value="${esc(s.outcome)}"${live(state)}>${esc(SIMULATION_LABELS[s.outcome])}</button>`).join(' ')}</form></details>`
+    : '';
   return stepPanel(2, status, hint, `
-    <p class="step-copy">${f ? (f.can_be_paid ? 'Freelancer setup is complete. Continue with the invoice in step 3.' : 'The freelancer has started connecting with Abillio. Their setup needs to be completed before they can receive payments.') : 'Now try the freelancer’s side. They sign up on your company’s page, then connect with Abillio to complete their account and payout setup.'}</p>
-    ${f ? `<p class="facts"><b>${esc(f.email)}</b> — ${f.can_be_paid ? 'Abillio confirms this freelancer is ready to be paid.' : 'Setup is in progress. Finish the Abillio window already opened for this freelancer; their status updates automatically.'}</p>` : '<p class="muted">Nobody has joined yet.</p>'}${unheard}
+    <p class="step-copy">${copy}</p>
+    ${facts}${unheard}
+    ${resend}${later}
     ${state.account ? (f ? `<details class="sandbox-tools"><summary>Try another signup</summary><p class="muted">Opening the signup page again starts another signup; it does not resume the existing Abillio window.</p>${signup}</details>` : `${signup}<p class="step-help">This opens the freelancer view. Return to the company view after setup to issue their invoice.</p>`) : '<p class="muted">Check the company connection in step 1 to begin.</p>'}
-    ${integrationDetails(`<p>Happens on <a href="/join">the freelancer's page</a>: <code>POST /onboarding/sessions/</code>, the popup, then <code>GET /onboarding/sessions/{id}</code> until <code>can_be_paid</code>, and <code>GET /engagements/?search=…</code> for the engagement id.</p>
-    ${f ? `<p class="facts">Freelancer <b>${esc(f.email)}</b> — session <code>${esc(f.session_id)}</code>, engagement <code>${esc(f.engagement_id ?? '(not yet)')}</code>${f.engagement_status ? ` ${stateTag(f.engagement_status)}` : ''}, can_be_paid <code>${esc(f.can_be_paid)}</code>, served by <code>${esc(f.servicing_company_slug ?? '?')}</code>.</p>` : ''}`)}
+    ${integrationDetails(`<p>Happens on <a href="/join">the freelancer's page</a>: <code>POST /onboarding/sessions/</code>, the popup, then <code>GET /onboarding/sessions/{id}</code> until <code>can_be_paid</code>, and <code>GET /engagements/?search=…</code> for the engagement id. Later, in the sandbox, <code>POST /engagements/{id}/requirements/sandbox/simulate</code> reopens a requirement, and the same <code>POST /onboarding/sessions/</code> with <code>purpose: "update"</code> sends the freelancer back to complete it.</p>
+    ${f ? `<p class="facts">Freelancer <b>${esc(f.email)}</b> — session <code>${esc(f.session_id)}</code>, engagement <code>${esc(f.engagement_id ?? '(not yet)')}</code>${f.engagement_status ? ` ${stateTag(f.engagement_status)}` : ''}, can_be_paid <code>${esc(f.can_be_paid)}</code>${f.requirements ? `, requirements ${stateTag(f.requirements.status)}` : ''}, served by <code>${esc(f.servicing_company_slug ?? '?')}</code>.</p>` : ''}`)}
   `, expanded);
 }
 
@@ -171,7 +233,7 @@ export function companyPage(input: CompanyPageInput): string {
   // with the current action.
   const panels = [
     keyPanel(input.key, input.state, steps[0], focus === 0),
-    onboardingPanel(input.state, input.publicUrl, steps[1], focus === 1),
+    onboardingPanel(input.state, input.publicUrl, steps[1], focus === 1, input.abillioOrigin ?? null),
     issuePanel(input.state, steps[2], focus === 2),
     payPanel(input.state, steps[3], focus === 3),
     eventsPanel(input.state, input.publicUrl, steps[4], focus === 4),
@@ -195,6 +257,6 @@ export function companyPage(input: CompanyPageInput): string {
       ${tracePanel(input.trace)}
       <details class="console-section store-section" id="store"><summary><h2 id="store-title">What we store</h2></summary><p class="muted"><code>data/state.json</code> — the fields a real integration keeps in its own database.</p>${jsonBlock(input.state)}</details>
     </details>
-  </main><script src="/public/steps.js"></script>`;
+  </main><script src="/public/steps.js"></script><script src="/public/popup.js"></script>`;
   return page('Back office', body, { current: 'office', steps, controls: startOver });
 }

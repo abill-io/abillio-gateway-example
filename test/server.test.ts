@@ -526,6 +526,55 @@ test("an update link's completion heard by webhook closes what was reopened; a f
   assert.equal(step2Status(await (await app.request('/')).text()), 'Done');
 });
 
+// The back office as GET / renders it. A walk not done makes the load-time
+// status check; the reads fail here, and the page renders what is stored.
+async function officeHtml(s: State): Promise<string> {
+  return (await appWith((async () => { throw new Error('unread'); }) as Api, memoryState(s)).app.request('/')).text();
+}
+
+test('once the freelancer can be paid, step 2 offers What happens later: one sandbox button per outcome, each posting it to /steps/onboard/simulate', async () => {
+  const later = (html: string) => html.match(/<details class="sandbox-tools"><summary>What happens later<\/summary>[\s\S]*?<\/details>/)?.[0];
+  const done = (await officeHtml(joinedState()));
+  const tools = later(done) ?? '';
+  assert.match(tools, /<form method="post" action="\/steps\/onboard\/simulate" class="outcomes">/);
+  assert.deepEqual([...tools.matchAll(/<button name="outcome" value="([^"]+)">([^<]+)<\/button>/g)].map(m => [m[1], m[2]]), [['expired', 'Identity lapses'], ['removed', 'Payout method removed'], ['revoked', 'Mandate withdrawn']]);
+  assert.ok(!done.includes('id="update-link"'), 'nothing reopened, so no link to send');
+  assert.equal(later(await officeHtml(notYetPayable())), undefined, 'not while the freelancer is still onboarding');
+  assert.equal(later(await officeHtml(reopenedState('mandate'))), undefined, 'nor while something reopened is open');
+});
+
+test('with a requirement reopened, step 2 says in plain words what needs attention and offers Send a new link for popup.js to open from the click', async () => {
+  const s = reopenedState('identity_verification');
+  s.freelancer!.requirements = {
+    status: 'blocked',
+    due: [...reopenedList('identity_verification').due, ...reopenedList('mandate').due],
+    upcoming: [{ kind: 'document_signature', state: 'upcoming', blocks: ['invoices'], due_at: '2026-11-02T00:00:00Z', resource_id: 'doc-1' }],
+  };
+  const html = await officeHtml(s);
+  assert.ok(html.includes('<p class="facts"><b>anna@example.com</b> — Setup needs attention: identity verification (expired); invoicing mandate (revoked); document signature (due 2026-11-02).</p>'), 'due first, then what is ahead, each by its name and Abillio\'s word for it');
+  assert.match(html, /class="step-hint">anna@example\.com · Setup needs attention<\/span>/);
+  assert.equal(step2Status(html), 'In progress');
+  assert.ok(html.includes('<form method="post" action="/steps/onboard/update-link" id="update-link" data-origin="https://new.abillio.dev"><button>Send a new link</button></form>'), 'the origin popup.js trusts a message from');
+  assert.ok(html.includes('<p id="popup-note" class="note" aria-live="polite"></p>'));
+  assert.ok(html.includes('<script src="/public/steps.js"></script><script src="/public/popup.js"></script>'), 'popup.js before app.js, so its submit handler runs first');
+  assert.ok(!html.includes('What happens later'));
+});
+
+test('what Abillio says about a requirement is escaped on the page, and a kind the sample does not know is said by its own name', async () => {
+  const s = reopenedState('mandate');
+  s.freelancer!.requirements = {
+    status: 'action_needed',
+    due: [],
+    upcoming: [
+      { kind: '<img src=x onerror=alert(1)>', state: 'upcoming', blocks: [] },
+      { kind: 'new_requirement', state: 'upcoming', blocks: [], detail: '<b>soon</b>', due_at: '2026-11-02T00:00:00Z' },
+    ],
+  };
+  const html = await officeHtml(s);
+  assert.ok(!html.includes('<img src=x') && !html.includes('<b>soon</b>'));
+  assert.ok(html.includes('Setup needs attention: &lt;img src=x onerror=alert(1)&gt;; new requirement (&lt;b&gt;soon&lt;/b&gt;, due 2026-11-02).'));
+});
+
 // --- Step 3 -------------------------------------------------------------------
 
 type App = ReturnType<typeof appWith>['app'];
@@ -1426,7 +1475,7 @@ test('a check stored under another key or ABILLIO_ACCOUNT reads as none: step 1 
     assert.match(join, /<span class="progress-track" aria-hidden="true"><span class="is-current">/, `${label}: on the join page's progress line too`);
     assert.equal(state.account, null, `${label}: nor does /api/state show the account`);
     const buttons = writeButtons(html);
-    assert.deepEqual(new Set(buttons.map(b => b.action)), new Set(['/steps/issue', '/steps/pay/fund', '/steps/pay/pay', '/steps/pay/simulate', '/steps/events/connect', '/steps/events/test', '/reset']), `${label}: every write button is on the page`);
+    assert.deepEqual(new Set(buttons.map(b => b.action)), new Set(['/steps/onboard/simulate', '/steps/issue', '/steps/pay/fund', '/steps/pay/pay', '/steps/pay/simulate', '/steps/events/connect', '/steps/events/test', '/reset']), `${label}: every write button is on the page`);
     assert.deepEqual(buttons.filter(b => !b.disabled), [], `${label}: and none is enabled`);
   }
   // The same walk, checked with the key this process runs with: all live.
