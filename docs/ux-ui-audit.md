@@ -78,8 +78,8 @@ mints an update link for the same address, opened from the click. The join
 page's own completion states are unchanged.
 
 Sources: [join view](../views/join.ts#L23),
-[popup feedback](../public/popup.js#L29),
-[company onboarding step](../views/company.ts#L47).
+[popup feedback](../public/popup.js#L34),
+[company onboarding step](../views/company.ts#L82).
 
 ### 2. High — A webhook receipt does not reconcile every displayed status
 

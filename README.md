@@ -562,13 +562,13 @@ moment of the first lookup:
 ```
 
 The step writes `freelancer: { email, session_id, session_url, engagement_id,
-engagement_status, can_be_paid, servicing_company_slug, requirements }`, as
-Abillio last answered them (`requirements` stays `null` until step 2b). The
-sample learns the engagement when they agree, long before they can be paid, so
-the back office counts the step done only once `can_be_paid` is true, from the
-status check or from an `engagement.onboarding.completed` for the session;
-until then the step reads **In progress**. While the freelancer cannot be paid
-yet, the back office makes
+engagement_status, can_be_paid, servicing_company_slug, requirements,
+reopened_after_session }`, as Abillio last answered them (the last two stay
+`null` until step 2b). The sample learns the engagement when they agree, long
+before they can be paid, so the back office counts the step done only once
+`can_be_paid` is true, from the status check or from an
+`engagement.onboarding.completed` for the session; until then the step reads
+**In progress**. While the freelancer cannot be paid yet, the back office makes
 the same status check each time it is opened (once the key is checked), so it
 catches up even when the join page was closed early and no webhook is
 connected. The serving company decides which balance the company's
@@ -630,7 +630,7 @@ simulator):
 {
   "id": "<engagement id>",
   "status": "active",
-  "compliance": { "kyc_status": "expired", "payout_ready": false, "can_be_paid": false },
+  "compliance": { "kyc_status": "expired", "payout_ready": true, "can_be_paid": false },
   "requirements": {
     "status": "blocked",
     "due": [
@@ -642,8 +642,10 @@ simulator):
 ```
 
 The step stores what that says on the freelancer: `can_be_paid` from
-`compliance.can_be_paid`, and `requirements` while their `status` is not
-`complete`. Step 2 then reads **In progress**, with *Setup needs attention:
+`compliance.can_be_paid`, `requirements` while their `status` is not
+`complete` (a list Abillio could not work out, `null`, leaves the stored one
+as it is), and `reopened_after_session`, the session stored at that moment.
+Step 2 then reads **In progress**, with *Setup needs attention:
 identity verification (expired).* Each item is said in plain words: the name
 of its `kind` and Abillio's `detail` (a word for a human, never branched on),
 with the deadline of an item still `upcoming`. `can_be_paid` alone no longer
@@ -673,9 +675,10 @@ of the body and spent on any answer, like the first mint:
 ```
 
 `purpose` is sent outright, so an engagement that is not active answers
-`409 onboarding_purpose_mismatch` instead of getting a first-time link, and
-one whose list is empty by now answers `409 requirements_complete`; either
-shows in the note under the button. The expected shape of the `201`:
+`409 onboarding_purpose_mismatch` instead of getting a first-time link, which
+shows in the note under the button. One whose list is empty by now answers
+`409 requirements_complete`: the list the page shows is stale, so the sample
+drops it and the page loads again. The expected shape of the `201`:
 
 ```json
 {
@@ -697,26 +700,32 @@ goes only to the browser that pressed. Minting again while the link is still
 open hands back the same link, so the button stays usable for a freelancer
 who closed the window half way.
 
-An update link asks no consent again. The freelancer confirms a six-digit
-code Abillio mails to their Abillio login (for a sandbox freelancer the popup
-shows the code to enter), and you hear `engagement.onboarding.started` with
-`purpose: "update"`. The popup then walks only what the list names: identity
-again (the sandbox approves it at once), a bank account (in the sandbox a
-replacement verifies as it is saved), or the mandate, granted again.
+An update link asks no consent again. The freelancer signs in with a
+six-digit code that Abillio mails to their Abillio login. A sandbox freelancer
+is mailed nothing: the popup's code screen says to enter `000000`. You then
+hear `engagement.onboarding.started` with `purpose: "update"`, and the popup
+walks only what the list names: identity again (the sandbox approves it at
+once), a bank account (in the sandbox a replacement verifies as it is saved),
+or the mandate, granted again.
 
 The back office follows the update link on its `state`, never on
 `can_be_paid`, since a freelancer can be payable while the link still has
 something to finish, as after **Mandate withdrawn**. After the press, and
 whenever the popup posts back, it asks `/join/status` every three seconds;
-the server reads the session and the engagement row and keeps what the row's
+the server reads the session and, once the link is past
+`awaiting_freelancer`, the engagement row, and keeps what the row's
 `requirements` still list as open. Once the session reads `complete` the page
 loads itself again, and with nothing open and `can_be_paid` true step 2 is
 **Done**. The same happens with the page closed: each load of the back office
 makes that check while step 2 is open, the poll (no `PUBLIC_URL`) records
 `engagement.onboarding.completed` from the session's `state`, with the
-session's `purpose`, and the webhook delivers Abillio's own. Only an update
-link's completion closes what reopened: a first link's, delivered late, says
-nothing about it. A list Abillio could not work out (`requirements: null`)
+session's `purpose`, and the webhook delivers Abillio's own. Only the
+completion of an update link minted after the reopen closes what reopened.
+The session stored when the simulation ran (`reopened_after_session`: the
+first link, or an earlier round's update link) predates it, so its
+completion, read by the poll or delivered late, says nothing about it; a
+status check's read of the engagement row still closes the list once it
+reads `complete`. A list Abillio could not work out (`requirements: null`)
 proves nothing and changes nothing.
 
 **What can go wrong.** A blocked popup: the note shows the link to open by
@@ -724,7 +733,8 @@ hand. An update link nobody signs in through expires after 24 hours (the note
 says so while the page follows it), and **Send a new link** mints another. A
 freelancer whose Abillio sign-in asks for a second factor gets no code: the
 popup sends them to sign in to Abillio, and you may hear only
-`engagement.onboarding.completed`.
+`engagement.onboarding.completed`. **Start over** in another tab while this
+page follows a link stops the follow, and the note says to reload the page.
 
 ## Step 3 — Issue an invoice in the freelancer's name
 
