@@ -2,6 +2,8 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { runInNewContext } from 'node:vm';
+import { defaultState } from '../lib/store.ts';
+import { joinPage as joinView } from '../views/join.ts';
 
 const source = readFileSync(new URL('../public/popup.js', import.meta.url), 'utf8');
 
@@ -151,6 +153,84 @@ test("the card answers only for the signup this page opened: a status check that
   assert.equal(another.card(), 'form');
   assert.equal(another.note.textContent, '');
   assert.match(another.status.innerHTML, /The freelancer can be paid/, 'its status stays in the console');
+});
+
+// public/popup.js against a join page's own markup, not hand-made elements:
+// every element the markup gives an id is there for getElementById, hidden as
+// the markup says, with its data-* attributes and, when it holds only text,
+// that text. An id the markup lacks is null, as in a browser. What the script
+// writes lands on these stand-ins.
+type Element = { hidden: boolean; textContent: string; innerHTML: string; dataset: Record<string, string>; focused: boolean; focus(): void; addEventListener(type: string, fn: (event: unknown) => unknown): void; querySelectorAll(): { disabled: boolean }[] };
+function onMarkup(html: string, answers: Record<string, Answer>) {
+  const handlers: Record<string, (event: unknown) => unknown> = {};
+  const messages: ((event: unknown) => unknown)[] = [];
+  const elements = new Map<string, Element>();
+  for (const [, tag, attributes] of html.matchAll(/<([a-z][a-z0-9]*)\b([^>]*)>/g)) {
+    const id = /\sid="([^"]+)"/.exec(attributes)?.[1];
+    if (!id) continue;
+    const text = new RegExp(`<${tag}\\b[^>]*\\sid="${id}"[^>]*>([^<]*)</${tag}>`).exec(html)?.[1] ?? '';
+    elements.set(id, {
+      hidden: /\shidden(?=\s|$)/.test(attributes),
+      textContent: text,
+      innerHTML: text,
+      dataset: Object.fromEntries([...attributes.matchAll(/\sdata-([a-z]+)="([^"]*)"/g)].map(([, key, value]) => [key, value])),
+      focused: false,
+      focus() { this.focused = true; },
+      addEventListener: (type, fn) => { handlers[type] = fn; },
+      querySelectorAll: () => [{ disabled: false }],
+    });
+  }
+  const ticks: (() => void)[] = [];
+  const stopped: number[] = [];
+  runInNewContext(source, {
+    document: { getElementById: (id: string) => elements.get(id) ?? null },
+    window: { ...placed(DESKTOP), addEventListener: (type: string, fn: (event: unknown) => unknown) => { if (type === 'message') messages.push(fn); }, open: () => ({ location: '', close: () => {} }) },
+    fetch: async (url: string) => answers[url](),
+    setInterval: (fn: () => void) => { ticks.push(fn); return ticks.length; },
+    clearInterval: (id: number | null) => { if (id) stopped.push(id); },
+    URLSearchParams,
+    FormData: class { *[Symbol.iterator]() { yield ['email', 'anna+x@example.com']; } },
+  });
+  const settle = () => new Promise(resolve => setImmediate(resolve));
+  return {
+    element: (id: string) => elements.get(id),
+    press: async () => { await handlers.submit({ preventDefault: () => {} }); await settle(); },
+    tick: async () => { ticks[0](); await settle(); },
+    message: (data: unknown) => { for (const fn of messages) fn({ origin: 'https://new.abillio.dev', data }); },
+    stopped,
+    settle,
+  };
+}
+
+test("on the join page's own markup a status tick and the completion message reach what the page has; a page an older server rendered, without the done card, has it all said in the note instead of a TypeError", async () => {
+  const rendered = joinView(defaultState(), null);
+  // The page and this script are two requests, so the page can come from a
+  // server older than the script: a process started before an update, or a
+  // rolling deploy part way through. Such a page has no done card and no
+  // place for the popup's line.
+  const older = rendered.replace(/<section[^>]*id="join-done"[\s\S]*?<\/section>/, '').replace(/<p id="popup-message"[^>]*><\/p>/, '').replace(' id="join-start"', '');
+  const cases: [string, string, boolean][] = [['the page as views/join.ts renders it', rendered, true], ['a page rendered before the done card', older, false]];
+  for (const [label, html, doneCard] of cases) {
+    let status = json({ state: 'in_progress', can_be_paid: false, purpose: 'onboarding', requirements: [{ key: 'profile', state: 'done' }, { key: 'kyc', state: 'in_progress' }], engagement_id: 'e1' });
+    const page = onMarkup(html, { '/join': firstLink, '/join/status': () => status() });
+    await page.press();
+    await page.tick();
+    const note = () => page.element('popup-note')?.textContent;
+    assert.equal(note(), 'Your setup is not finished yet. Still open: identity verification (in progress). This page checks again every 3 s.', `${label}: the tick reads the card and says what is open`);
+    status = payable;
+    page.message({ source: 'abillio', session_id: 's1', purpose: 'onboarding', state: 'complete', can_be_paid: true });
+    await page.settle();
+    assert.match(page.element('status')?.innerHTML ?? '', /^<p>state <b>complete<\/b>, can_be_paid <b>true<\/b>/, `${label}: the status element holds the session's answer`);
+    assert.deepEqual(page.stopped, [1], `${label}: and the follow stops`);
+    if (doneCard) {
+      assert.deepEqual([page.element('join-start')?.hidden, page.element('join-done')?.hidden], [true, false], `${label}: the done card in the form's place`);
+      assert.deepEqual([page.element('join-done-title')?.textContent, page.element('join-done-title')?.focused], ['You’re set up', true], label);
+      assert.equal(page.element('popup-message')?.textContent, 'Abillio says: state complete, can_be_paid true (session s1).', label);
+      assert.equal(note(), '', label);
+    } else {
+      assert.equal(note(), 'You’re set up: Abillio confirmed you can be paid. Your Company can now issue your first invoice.', label);
+    }
+  }
 });
 
 test('the popup opens 640 by 820, no larger than the screen, centred over the page that opened it', async () => {

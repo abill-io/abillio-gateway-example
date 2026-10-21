@@ -13,12 +13,18 @@
   const note = document.getElementById('popup-note');
   const status = document.getElementById('status');
   // The join page's card shows the form (#join-start) until Abillio confirms
-  // the signup, then what happens next in its place (#join-done). The popup's
-  // own message goes under How this demo connects to Abillio
-  // (#popup-message), next to the session's status (views/join.ts).
+  // the signup, then what happens next in its place (#join-done, with its
+  // heading). The popup's own message goes under How this demo connects to
+  // Abillio (#popup-message), next to the session's status (views/join.ts).
+  // The page and this script are two requests, so the page can come from a
+  // server older than the script (a process started before an update, a
+  // rolling deploy part way through), without these elements: the note then
+  // says it all, as it did before the done card.
   const start = document.getElementById('join-start');
   const done = document.getElementById('join-done');
+  const doneTitle = document.getElementById('join-done-title');
   const heard = document.getElementById('popup-message');
+  const doneCard = Boolean(start && done && doneTitle);
   let abillioOrigin = form.dataset.origin || null;
   let popup = null;
   let timer = null;
@@ -38,6 +44,8 @@
   // may be another visitor's (the back office's Try another signup lands
   // here), so what it answers stays in the console.
   let ours = false;
+  // Whether Abillio has confirmed that signup: from then on the card says so.
+  let finished = false;
 
   // The status is Abillio's answer relayed by our server. It is still escaped
   // before it becomes HTML, as every value on the server-rendered pages is.
@@ -56,14 +64,16 @@
 
   // The signup the join page opened is done: the done card takes the form's
   // place, and the focus the form held, and nothing the note said about the
-  // signup still applies.
+  // signup still applies. A page without the done card says it in the note.
   const showDone = () => {
-    if (!done.hidden) return;
+    if (finished) return;
+    finished = true;
+    said = '';
+    progress = doneCard ? '' : 'You’re set up: Abillio confirmed you can be paid. Your Company can now issue your first invoice.';
+    if (!doneCard) return;
     start.hidden = true;
     done.hidden = false;
-    said = '';
-    progress = '';
-    document.getElementById('join-done-title').focus();
+    doneTitle.focus();
   };
 
   // The join page. The console shows the session as Abillio answers it, its
@@ -81,7 +91,7 @@
     status.innerHTML = `<p>state <b>${esc(s.state)}</b>, can_be_paid <b>${esc(s.can_be_paid)}</b>${s.engagement_id ? `, engagement <code>${esc(s.engagement_id)}</code>` : ''}</p><ul>${rows}</ul>` +
       (s.can_be_paid ? '<p class="ok">The freelancer can be paid. Go to the <a href="/">back office</a> and issue the first invoice.</p>' : waiting);
     if (over) clearInterval(timer);
-    if (!ours || !done.hidden) return;
+    if (!ours || finished) return;
     if (s.can_be_paid || s.state === 'complete') { showDone(); return; }
     const left = (s.requirements || []).filter(r => r.state !== 'done').map(plainRow).join('; ');
     if (s.state === 'expired') progress = 'The link expired before your setup was finished: press Continue with Abillio for a new one.';
@@ -155,7 +165,7 @@
     if (!join) { said = line; sayNote(); follow(); return; }
     // The join page keeps the line itself in the console and says in the card
     // what it means. The status check that follows stores it on the server.
-    heard.textContent = line;
+    if (heard) heard.textContent = line; else said = line;
     ours = true;
     if (event.data.can_be_paid === true || event.data.state === 'complete') showDone();
     sayNote();
