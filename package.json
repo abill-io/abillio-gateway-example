@@ -1,6 +1,6 @@
 {
   "name": "abillio-gateway-example",
-  "version": "0.1.7",
+  "version": "0.1.8",
   "private": true,
   "description": "Clone-and-run sample of a company integrating Abillio: onboarding popup, invoice in the freelancer's name, wallet payment, payout, webhooks.",
   "license": "MIT",
