@@ -10,7 +10,7 @@ export type StepStatus = 'done' | 'active' | 'current' | 'upcoming';
 
 // Where the walk stands, read off the stored state: the key check stored the
 // account (1), Abillio says the freelancer can be paid and nothing a
-// simulation reopened is open (2, `setupDone`), the invoice is past its draft
+// simulation reopened is due (2, `setupDone`), the invoice is past its draft
 // (3) and paid (4), and Abillio has told us something about this walk, by
 // webhook or poll (5): what a reset sends about its demo freelancers, or a
 // test delivery, does not count. Step 2 is under way from the join until

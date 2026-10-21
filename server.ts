@@ -251,16 +251,18 @@ export function createApp(deps: Deps): Hono {
   }
 
   // Until step 2 is done (the stored freelancer cannot be paid yet, or what a
-  // simulation reopened is still open), every load makes that status check
-  // too: the join page's poll stores the answer only while the join page is
-  // open, and on a public URL with no webhook connected nothing else would.
+  // simulation reopened is still due), and while a reopened list is stored at
+  // all (what is only upcoming blocks nothing, but it is followed until
+  // Abillio closes it), every load makes that status check too: the join
+  // page's poll stores the answer only while the join page is open, and on a
+  // public URL with no webhook connected nothing else would.
   // Only once the key is checked, as the page counts it (boundAccount). A
   // failed read does not fail the page: it renders what is stored, and the
   // trace shows the refused call.
   app.get('/', async c => {
     const s = deps.state.load();
     const f = s.freelancer;
-    if (f && !setupDone(f) && boundAccount(s)) {
+    if (f && (!setupDone(f) || f.requirements) && boundAccount(s)) {
       try {
         await checkStatus(f);
       } catch {

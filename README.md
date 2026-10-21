@@ -662,7 +662,11 @@ as it is), and `reopened_after_session`, the session stored at that moment.
 Step 2 then reads **In progress**, with *Setup needs attention:
 identity verification (expired).* Each item is said in plain words: the name
 of its `kind` and Abillio's `detail` (a word for a human, never branched on),
-with the deadline of an item still `upcoming`. `can_be_paid` alone no longer
+with the deadline of an item still `upcoming`. Only what is `due` needs
+attention; what is `upcoming` blocks nothing yet and is said apart, muted, as
+*Also worth doing in the same link: billing details (address missing).* (a
+gateway freelancer gives no postal address in the first-time lane). With only
+that left, step 2 reads **Done**. `can_be_paid` alone no longer
 decides the step. It is about payouts only, and a withdrawn mandate
 stops invoicing, not payouts: **Mandate withdrawn** answers
 `can_be_paid: true` with
@@ -729,9 +733,9 @@ whenever the popup posts back, it asks `/join/status` every three seconds;
 the server reads the session and, once the link is past
 `awaiting_freelancer`, the engagement row, and keeps what the row's
 `requirements` still list as open. Once the session reads `complete` the page
-loads itself again, and with nothing open and `can_be_paid` true step 2 is
+loads itself again, and with nothing due and `can_be_paid` true step 2 is
 **Done**. The same happens with the page closed: each load of the back office
-makes that check while step 2 is open, the poll (no `PUBLIC_URL`) records
+makes that check while a reopened list is stored, the poll (no `PUBLIC_URL`) records
 `engagement.onboarding.completed` from the session's `state`, with the
 session's `purpose`, and the webhook delivers Abillio's own. Only the
 completion of an update link minted after the reopen closes what reopened.

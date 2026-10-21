@@ -4,7 +4,7 @@ import { createHmac } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { createApp } from '../server.ts';
 import { Trace } from '../lib/trace.ts';
-import { defaultState, type Requirements, type State } from '../lib/store.ts';
+import { defaultState, type RequirementItem, type Requirements, type State } from '../lib/store.ts';
 import { setupDone } from '../steps/02-onboard.ts';
 import { AbillioError, type Api } from '../lib/abillio.ts';
 import { TEST_ENV, fileLikeState, memoryState, sandboxState } from './helpers.ts';
@@ -502,12 +502,15 @@ test('while what a simulation reopened is open, each load follows the engagement
     return s;
   };
   const complete: Requirements = { status: 'complete', due: [], upcoming: [] };
+  const upcomingOnly: Requirements = { status: 'action_needed', due: [], upcoming: [{ kind: 'billing_details', state: 'upcoming', blocks: [], detail: 'address_missing', due_at: null, resource_id: null }] };
   const cases: { label: string; initial: State; listed: Requirements | null; meanwhile?: (store: ReturnType<typeof fileLikeState>) => void; requirements: Requirements | null; step2: string }[] = [
     { label: 'the mandate is still withdrawn', initial: update(), listed: reopenedList('mandate'), requirements: reopenedList('mandate'), step2: 'In progress' },
     { label: 'the freelancer granted it again', initial: update(), listed: complete, requirements: null, step2: 'Done' },
     { label: 'Abillio could not work the list out', initial: update(), listed: null, requirements: reopenedList('mandate'), step2: 'In progress' },
     { label: 'a simulation stored a newer list while the reads were out', initial: update(), listed: complete, meanwhile: store => store.update(s => { s.freelancer!.requirements = reopenedList('payout_method'); }), requirements: reopenedList('payout_method'), step2: 'In progress' },
     { label: 'a first onboarding: nothing was reopened, so the list is not kept', initial: notYetPayable(), listed: reopenedList('identity_verification'), requirements: null, step2: 'In progress' },
+    // Done, since nothing blocks, and the list is still followed until Abillio closes it.
+    { label: 'only something upcoming is left', initial: { ...update(), freelancer: { ...update().freelancer!, requirements: upcomingOnly } }, listed: upcomingOnly, requirements: upcomingOnly, step2: 'Done' },
   ];
   for (const { label, initial, listed, meanwhile, requirements, step2 } of cases) {
     const store = fileLikeState(initial);
@@ -611,13 +614,36 @@ test('with a requirement reopened, step 2 says in plain words what needs attenti
     upcoming: [{ kind: 'document_signature', state: 'upcoming', blocks: ['invoices'], due_at: '2026-11-02T00:00:00Z', resource_id: 'doc-1' }],
   };
   const html = await officeHtml(s);
-  assert.ok(html.includes('<p class="facts"><b>anna@example.com</b> — Setup needs attention: identity verification (expired); invoicing mandate (revoked); document signature (due 2026-11-02).</p>'), 'due first, then what is ahead, each by its name and Abillio\'s word for it');
+  assert.ok(html.includes('<p class="facts"><b>anna@example.com</b> — Setup needs attention: identity verification (expired); invoicing mandate (revoked).</p><p class="muted">Also worth doing in the same link: document signature (due 2026-11-02).</p>'), 'what is due, then apart what is ahead, each by its name and Abillio\'s word for it');
   assert.match(html, /class="step-hint">anna@example\.com · Setup needs attention<\/span>/);
   assert.equal(step2Status(html), 'In progress');
   assert.ok(html.includes('<form method="post" action="/steps/onboard/update-link" id="update-link" data-origin="https://new.abillio.dev"><button>Send a new link</button></form>'), 'the origin popup.js trusts a message from');
   assert.ok(html.includes('<p id="popup-note" class="note" aria-live="polite"></p>'));
   assert.ok(html.includes('<script src="/public/steps.js"></script><script src="/public/popup.js"></script>'), 'popup.js before app.js, so its submit handler runs first');
   assert.ok(!html.includes('What happens later'));
+});
+
+test('step 2 says what blocks, and apart what is merely worth doing in the same link; with only something upcoming left nothing blocks, and the step is done', async () => {
+  const identity = reopenedList('identity_verification').due[0];
+  // What a gateway freelancer never gives in the first-time lane.
+  const billing: RequirementItem = { kind: 'billing_details', state: 'upcoming', blocks: [], detail: 'address_missing', due_at: null, resource_id: null };
+  const listed = (due: RequirementItem[], upcoming: RequirementItem[], canBePaid: boolean): State => {
+    const s = joinedState();
+    s.freelancer = { ...s.freelancer!, can_be_paid: canBePaid, requirements: { status: due.length ? 'blocked' : 'action_needed', due, upcoming }, reopened_after_session: 's1' };
+    return s;
+  };
+  const aside = '<p class="muted">Also worth doing in the same link: billing details (address missing).</p>';
+  const cases: [string, State, string, string, boolean][] = [
+    ['something due only', listed([identity], [], false), 'In progress', 'Setup needs attention: identity verification (expired).', false],
+    ['something due and something upcoming', listed([identity], [billing], false), 'In progress', 'Setup needs attention: identity verification (expired).', true],
+    ['something upcoming only', listed([], [billing], true), 'Done', 'Abillio confirms this freelancer is ready to be paid.', true],
+  ];
+  for (const [label, s, step2, facts, worthDoing] of cases) {
+    const html = await officeHtml(s);
+    assert.equal(step2Status(html), step2, label);
+    assert.ok(html.includes(`<p class="facts"><b>anna@example.com</b> — ${facts}</p>${worthDoing ? aside : ''}`), label);
+    assert.equal(html.includes('id="update-link"'), true, `${label}: the link that does it`);
+  }
 });
 
 test('what Abillio says about a requirement is escaped on the page, and a kind the sample does not know is said by its own name', async () => {
@@ -632,7 +658,7 @@ test('what Abillio says about a requirement is escaped on the page, and a kind t
   };
   const html = await officeHtml(s);
   assert.ok(!html.includes('<img src=x') && !html.includes('<b>soon</b>'));
-  assert.ok(html.includes('Setup needs attention: &lt;img src=x onerror=alert(1)&gt;; new requirement (&lt;b&gt;soon&lt;/b&gt;, due 2026-11-02).'));
+  assert.ok(html.includes('Also worth doing in the same link: &lt;img src=x onerror=alert(1)&gt;; new requirement (&lt;b&gt;soon&lt;/b&gt;, due 2026-11-02).'));
 });
 
 // --- Step 3 -------------------------------------------------------------------

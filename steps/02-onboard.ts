@@ -4,7 +4,7 @@
 // the link was minted for: the session answer carries no engagement id.
 import { createHash } from 'node:crypto';
 import type { Api } from '../lib/abillio.ts';
-import { idempotencyKeyFor, type Requirements, type State } from '../lib/store.ts';
+import { idempotencyKeyFor, type RequirementItem, type Requirements, type State } from '../lib/store.ts';
 
 export type JoinForm = { first_name: string; last_name: string; email: string; tax_country: string; locale: 'lv' | 'en' };
 export type OnboardingBody = { email: string; locale: 'lv' | 'en'; return_url: string; prefill: { first_name: string; last_name: string; tax_country: string } };
@@ -73,9 +73,20 @@ export async function findEngagement(api: Api, email: string) {
   return { id: row.id, status: row.status, can_be_paid: row.compliance.can_be_paid, servicing_company_slug: row.counterparty.servicing_company?.slug ?? null, requirements: row.requirements ?? null };
 }
 
+// A stored list's items by what they mean, read off each item's own `state`:
+// a `due` one needs doing now, an `upcoming` one blocks nothing yet and is
+// merely worth doing in the same link (billing details a gateway freelancer
+// never gives in the first-time lane, say). A state the sample does not know
+// counts as due, so it never passes for done.
+export function splitRequirements(requirements: Requirements | null): { due: RequirementItem[]; upcoming: RequirementItem[] } {
+  const items = requirements ? [...requirements.due, ...requirements.upcoming] : [];
+  return { due: items.filter(item => item.state !== 'upcoming'), upcoming: items.filter(item => item.state === 'upcoming') };
+}
+
 // Step 2 is done once Abillio says the freelancer can be paid and nothing a
-// simulation reopened (step 2b) is still open. `can_be_paid` alone is not
-// enough: it is about payouts, and a withdrawn mandate stops invoicing only.
+// simulation reopened (step 2b) is due. `can_be_paid` alone is not enough: it
+// is about payouts, and a withdrawn mandate stops invoicing only. What is
+// only upcoming blocks nothing.
 export function setupDone(f: State['freelancer']): boolean {
-  return f !== null && f.can_be_paid && !f.requirements;
+  return f !== null && f.can_be_paid && splitRequirements(f.requirements).due.length === 0;
 }

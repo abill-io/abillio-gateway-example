@@ -1,7 +1,7 @@
 import type { RequirementItem, State } from '../lib/store.ts';
 import type { TraceEntry } from '../lib/trace.ts';
 import type { KeyReport } from '../steps/01-key.ts';
-import { setupDone } from '../steps/02-onboard.ts';
+import { setupDone, splitRequirements } from '../steps/02-onboard.ts';
 import { REQUIREMENT_SIMULATIONS, type RequirementSimulation } from '../steps/02b-requirements.ts';
 import { issueStage, pendingRequest } from '../steps/03-issue.ts';
 import { DEFAULT_COMPANY, PAYOUT_OUTCOMES } from '../steps/04-pay.ts';
@@ -82,8 +82,12 @@ const SIMULATION_LABELS: Record<RequirementSimulation['outcome'], string> = {
 export function onboardingPanel(state: State, publicUrl: string | null, status: StepStatus = stepStatuses(state)[1], expanded?: boolean, abillioOrigin: string | null = null): string {
   const f = state.freelancer;
   const done = setupDone(f);
-  // What a simulation reopened (step 2b), due first, in plain words.
-  const open = f?.requirements ? [...f.requirements.due, ...f.requirements.upcoming].map(plainRequirement).join('; ') : '';
+  // What a simulation reopened (step 2b), in plain words: what is due needs
+  // attention, and what is only upcoming is said apart, as worth doing in the
+  // same link, since it blocks nothing.
+  const listed = splitRequirements(f?.requirements ?? null);
+  const open = listed.due.map(plainRequirement).join('; ');
+  const ahead = listed.upcoming.map(plainRequirement).join('; ');
   const hint = f ? `${f.email} · ${done ? 'Ready to be paid' : open ? 'Setup needs attention' : 'Setup in progress'}` : 'Try the signup page your freelancers would use.';
   const signup = `<a class="button-link${f ? ' secondary' : ''}" href="/join">${f ? 'Open freelancer signup' : 'Register & connect with Abillio'}</a>`;
   // With a public URL the server does not poll: until webhooks are connected,
@@ -98,11 +102,11 @@ export function onboardingPanel(state: State, publicUrl: string | null, status: 
         ? 'Something the freelancer had set up needs doing again. Send them a new link: Abillio’s window asks only for what is listed, and this step is done again once they finish it.'
         : 'The freelancer has started connecting with Abillio. Their setup needs to be completed before they can receive payments.';
   const facts = f
-    ? `<p class="facts"><b>${esc(f.email)}</b> — ${done ? 'Abillio confirms this freelancer is ready to be paid.' : open ? `Setup needs attention: ${esc(open)}.` : 'Setup is in progress. Finish the Abillio window already opened for this freelancer; their status updates automatically.'}</p>`
+    ? `<p class="facts"><b>${esc(f.email)}</b> — ${done ? 'Abillio confirms this freelancer is ready to be paid.' : open ? `Setup needs attention: ${esc(open)}.` : 'Setup is in progress. Finish the Abillio window already opened for this freelancer; their status updates automatically.'}</p>${ahead ? `<p class="muted">Also worth doing in the same link: ${esc(ahead)}.</p>` : ''}`
     : '<p class="muted">Nobody has joined yet.</p>';
   // Send a new link opens Abillio's window from the click (public/popup.js),
   // as the join page's Continue does; the link reaches only that browser.
-  const resend = f && open
+  const resend = f && (open || ahead)
     ? `<form method="post" action="/steps/onboard/update-link" id="update-link" data-origin="${esc(abillioOrigin ?? '')}"><button${live(state)}>Send a new link</button></form>
     <p class="step-help">Opens Abillio’s window for ${esc(f.email)}, where they complete only what is listed.</p>
     <p id="popup-note" class="note" aria-live="polite"></p>`
