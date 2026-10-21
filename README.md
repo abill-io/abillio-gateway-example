@@ -253,7 +253,7 @@ For UI changes, start here:
 | `views/layout.ts` | Document head, home link, page navigation, theme control and company introduction. |
 | `views/partials.ts` | Step summaries, completion markers, status tags, errors and request traces. |
 | `views/company.ts` | The five company steps and their expanded content. |
-| `views/join.ts` | The freelancer invitation, signup form and session diagnostics. |
+| `views/join.ts` | The freelancer invitation, signup form, its done state and session diagnostics. |
 | `public/theme.js` | System theme detection and the saved light/dark preference. |
 | `public/steps.js` | Opening folded content targeted by a URL fragment. |
 | `public/app.js` | Form submission feedback and company-view refreshes when updates arrive. |
@@ -519,6 +519,16 @@ needs no tunnel; production accounts need https. When `PUBLIC_URL` is set,
 or the message is dropped (the page's own status poll still shows the outcome). `popup.js`
 trusts the message only when `event.origin` is Abillio's (taken from the session
 url) and `data.source` is `"abillio"`.
+
+The join page answers the freelancer in plain words. While their setup is open,
+the note under the form names what is still open (**identity verification (in
+progress)**, not `kyc in_progress`). Once the message, or a status check, says
+they can be paid (`can_be_paid: true` or `state: "complete"`), the form gives
+way to **You’re set up**, one sentence and **Back to company view** as the
+primary action. The message itself is kept under **How this demo connects to
+Abillio**, next to the session status. Only the signup this page opened gets
+that answer: a page opened with an earlier session stored keeps its form, since
+the back office's **Try another signup** lands there.
 
 Meanwhile the page asks the server every three seconds (from the moment it
 opens, when a session is already stored), and the server asks

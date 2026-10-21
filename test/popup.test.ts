@@ -15,12 +15,15 @@ const DESKTOP: Geometry = { screenX: 100, screenY: 50, outerWidth: 1280, outerHe
 const placed = ({ availWidth, availHeight, ...frame }: Geometry) => ({ ...frame, screen: { availWidth, availHeight } });
 
 // public/popup.js on a join page as the server renders it, in a context with
-// just what the script touches: the form, the note, the status console, the
+// just what the script touches: the form's card (#join-start) and the done
+// card that takes its place (#join-done, hidden, with its heading), the note,
+// the status console and the popup's own line under it (#popup-message), the
 // window, fetch and the timers. `stored` is whether the server rendered the
 // page with a session stored (the form's data-session). `opened` records
 // every window.open call.
 function joinPage(stored: boolean, answers: Record<string, Answer>, geometry: Geometry = DESKTOP) {
   const handlers: Record<string, (event: unknown) => unknown> = {};
+  const messages: ((event: unknown) => unknown)[] = [];
   const button = { disabled: false };
   const form = {
     dataset: { origin: 'https://new.abillio.dev', session: stored ? 'stored' : '' },
@@ -29,20 +32,33 @@ function joinPage(stored: boolean, answers: Record<string, Answer>, geometry: Ge
   };
   const note = { textContent: '' };
   const status = { innerHTML: '' };
+  const start = { hidden: false };
+  const done = { hidden: true };
+  const heading = { focused: false, focus() { this.focused = true; } };
+  const heard = { textContent: '' };
   const fetched: string[] = [];
   const ticks: (() => void)[] = [];
+  const stopped: number[] = [];
   const opened: string[][] = [];
+  const elements: Record<string, unknown> = { join: form, 'popup-note': note, status, 'join-start': start, 'join-done': done, 'join-done-title': heading, 'popup-message': heard };
   runInNewContext(source, {
-    document: { getElementById: (id: string) => ({ join: form, 'popup-note': note, status } as Record<string, unknown>)[id] ?? null },
-    window: { ...placed(geometry), addEventListener: () => {}, open: (...args: string[]) => { opened.push(args); return { location: '', close: () => {} }; } },
+    document: { getElementById: (id: string) => elements[id] ?? null },
+    window: { ...placed(geometry), addEventListener: (type: string, fn: (event: unknown) => unknown) => { if (type === 'message') messages.push(fn); }, open: (...args: string[]) => { opened.push(args); return { location: '', close: () => {} }; } },
     fetch: async (url: string) => { fetched.push(url); return answers[url](); },
     setInterval: (fn: () => void) => { ticks.push(fn); return ticks.length; },
-    clearInterval: () => {},
+    clearInterval: (id: number | null) => { if (id) stopped.push(id); },
     URLSearchParams,
     FormData: class { *[Symbol.iterator]() { yield ['email', 'anna+x@example.com']; } },
   });
   const settle = () => new Promise(resolve => setImmediate(resolve));
-  return { handlers, button, note, status, fetched, ticks, opened, settle };
+  const press = async () => {
+    await handlers.submit({ preventDefault: () => {} });
+    await settle();
+  };
+  const message = (origin: string, data: unknown) => { for (const fn of messages) fn({ origin, data }); };
+  // Which of the card's two faces shows.
+  const card = () => (done.hidden ? (start.hidden ? 'neither' : 'form') : start.hidden ? 'done' : 'both');
+  return { handlers, button, note, status, heading, heard, fetched, ticks, stopped, opened, settle, press, message, card };
 }
 
 const json = (body: unknown) => () => new Response(JSON.stringify(body), { status: 200, headers: { 'content-type': 'application/json' } });
@@ -103,8 +119,41 @@ test('Continue is given back once the link is minted: each press is a new link, 
   assert.equal(page.button.disabled, false);
 });
 
+const firstLink = json({ session_id: 's1', url: 'https://new.abillio.dev/s/tok', origin: 'https://new.abillio.dev' });
+const payable = json({ state: 'complete', can_be_paid: true, purpose: 'onboarding', requirements: [{ key: 'kyc', state: 'done' }, { key: 'payout_method', state: 'done' }], engagement_id: 'e1' });
+
+test("after Continue the card says in plain words what is still open; once Abillio's popup says they can be paid it says they are set up, and the popup's raw line goes under How this demo connects to Abillio", async () => {
+  let status = json({ state: 'in_progress', can_be_paid: false, purpose: 'onboarding', requirements: [{ key: 'profile', state: 'done' }, { key: 'kyc', state: 'in_progress' }, { key: 'payout_method', state: 'not_started' }], engagement_id: 'e1' });
+  const page = joinPage(false, { '/join': firstLink, '/join/status': () => status() });
+  await page.press();
+  assert.equal(page.note.textContent, 'Your setup is not finished yet. Still open: identity verification (in progress); payout method (not started). This page checks again every 3 s.');
+  assert.equal(page.card(), 'form');
+  status = payable;
+  page.message('https://new.abillio.dev', { source: 'abillio', session_id: 's1', purpose: 'onboarding', state: 'complete', can_be_paid: true });
+  assert.equal(page.card(), 'done', 'at once, on the message');
+  assert.equal(page.heading.focused, true, 'the form it replaces held the focus');
+  assert.equal(page.note.textContent, '', 'nothing the card said about the signup still applies');
+  assert.equal(page.heard.textContent, 'Abillio says: state complete, can_be_paid true (session s1).');
+  await page.settle();
+  assert.equal(page.fetched.at(-1), '/join/status', 'the server still reads the session, and stores that they can be paid');
+  assert.deepEqual([page.card(), page.stopped], ['done', [1]], 'and the follow stops there');
+});
+
+test("the card answers only for the signup this page opened: a status check that finds it payable, its popup closed without a message, sets it done; a session stored before the page was opened leaves the form for another signup", async () => {
+  const closed = joinPage(false, { '/join': firstLink, '/join/status': payable });
+  await closed.press();
+  assert.equal(closed.card(), 'done');
+  assert.equal(closed.heard.textContent, '', 'no message came');
+  // The back office's Try another signup opens this page with the last
+  // visitor's session stored, done long ago.
+  const another = joinPage(true, { '/join/status': payable });
+  await another.settle();
+  assert.equal(another.card(), 'form');
+  assert.equal(another.note.textContent, '');
+  assert.match(another.status.innerHTML, /The freelancer can be paid/, 'its status stays in the console');
+});
+
 test('the popup opens 640 by 820, no larger than the screen, centred over the page that opened it', async () => {
-  const minted = json({ session_id: 's1', url: 'https://new.abillio.dev/s/tok', origin: 'https://new.abillio.dev' });
   const cases: [string, Geometry, Record<string, string>][] = [
     // (1280 - 640) / 2 and (900 - 820) / 2 from the window's corner.
     ['a desktop window', DESKTOP, { width: '640', height: '820', left: '420', top: '90' }],
@@ -112,7 +161,7 @@ test('the popup opens 640 by 820, no larger than the screen, centred over the pa
     ['a screen shorter than the popup', { screenX: 0, screenY: 0, outerWidth: 1366, outerHeight: 738, availWidth: 1366, availHeight: 738 }, { width: '640', height: '738', left: '363', top: '0' }],
   ];
   for (const [label, geometry, size] of cases) {
-    const page = joinPage(false, { '/join': minted, '/join/status': inProgress }, geometry);
+    const page = joinPage(false, { '/join': firstLink, '/join/status': inProgress }, geometry);
     await page.handlers.submit({ preventDefault: () => {} });
     const [url, name, features] = page.opened[0];
     assert.deepEqual([url, name], ['about:blank', 'abillio'], `${label}: opened blank on the click, pointed at the link once it is minted`);

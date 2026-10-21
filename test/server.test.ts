@@ -269,6 +269,17 @@ test("GET /join pre-fills a fresh made-up address on every load, never the store
   assert.ok(/id="status">[\s\S]*last\.visitor@example\.com/.test(html), 'the stored session is still shown');
 });
 
+test("GET /join carries the done card hidden, for popup.js to show in the form's place: what it means and Back to company view as its action; the popup's own line has its place under How this demo connects to Abillio", async () => {
+  const { app } = appWith((async () => ({})) as Api, memoryState(sandboxState()));
+  const html = await (await app.request('/join')).text();
+  assert.match(html, /<section class="panel join-card" id="join-start" aria-labelledby="join-form-title">[\s\S]*?<form id="join"/, "the form's card");
+  const done = /<section class="panel join-card join-done" id="join-done" aria-labelledby="join-done-title" hidden>([\s\S]*?)<\/section>/.exec(html)?.[1] ?? '';
+  assert.match(done, /<h2 id="join-done-title" tabindex="-1">You’re set up<\/h2>/, 'a heading popup.js can move the focus to');
+  assert.ok(done.includes('<p>Abillio confirmed you can be paid. Your Company can now issue your first invoice.</p>'));
+  assert.ok(done.includes('<a class="button-link" href="/">Back to company view</a>'), 'the primary action, to the back office');
+  assert.match(html, /<details class="console join-technical" id="session">[\s\S]*?<div id="status">[\s\S]*?<p id="popup-message" class="note"><\/p>\s*<\/details>/);
+});
+
 // What the hosted copy stored on 2026-10-20: the freelancer finished the
 // popup and the engagement is `active`, but the join page was closed before
 // its status check stored that they can be paid, and no webhook was connected

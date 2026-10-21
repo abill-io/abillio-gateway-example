@@ -12,34 +12,36 @@
   if (!form) return;
   const note = document.getElementById('popup-note');
   const status = document.getElementById('status');
+  // The join page's card shows the form (#join-start) until Abillio confirms
+  // the signup, then what happens next in its place (#join-done). The popup's
+  // own message goes under How this demo connects to Abillio
+  // (#popup-message), next to the session's status (views/join.ts).
+  const start = document.getElementById('join-start');
+  const done = document.getElementById('join-done');
+  const heard = document.getElementById('popup-message');
   let abillioOrigin = form.dataset.origin || null;
   let popup = null;
   let timer = null;
-  // The note says two things at once: what the popup or the page last said
-  // (a blocked popup's link, Abillio's message), and why the last status
-  // check failed, until one succeeds. A failed check must not wipe the link
-  // a blocked popup left to open by hand.
+  // The note says up to three things at once: what the popup or the page
+  // last said (a blocked popup's link, a refused mint; on the back office,
+  // Abillio's message and where the update link stands), where the join
+  // page's signup stands, and why the last status check failed, until one
+  // succeeds. A failed check must not wipe the link a blocked popup left to
+  // open by hand.
   let said = '';
+  let progress = '';
   let failure = '';
-  const sayNote = () => { note.textContent = [said, failure].filter(Boolean).join(' '); };
+  const sayNote = () => { note.textContent = [said, progress, failure].filter(Boolean).join(' '); };
+  // Whether the join page follows a signup it opened: after its own
+  // Continue, or once Abillio's popup has posted to it. Only then does the
+  // card speak about the signup. The session stored when the page was opened
+  // may be another visitor's (the back office's Try another signup lands
+  // here), so what it answers stays in the console.
+  let ours = false;
 
   // The status is Abillio's answer relayed by our server. It is still escaped
   // before it becomes HTML, as every value on the server-rendered pages is.
   const esc = v => String(v ?? '').replace(/[&<>"']/g, ch => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[ch]);
-
-  // The join page: until the freelancer can be paid, one sentence names what
-  // Abillio is still waiting on: a popup closed half way must not read as
-  // nothing having happened. The poll stops once they can be paid or the link
-  // is over, and the sentence goes with it.
-  const renderJoin = s => {
-    const rows = (s.requirements || []).map(r => `<li><code>${esc(r.key)}</code> ${esc(r.state)}</li>`).join('');
-    const over = s.can_be_paid || s.state === 'complete' || s.state === 'expired';
-    const open = (s.requirements || []).filter(r => r.state !== 'done').map(r => `<code>${esc(r.key)}</code> ${esc(r.state)}`).join(', ');
-    const waiting = s.state !== 'none' && !over ? `<p class="muted">Not payable yet${open ? ` — Abillio is still waiting on: ${open}` : ''}. The page keeps asking every 3 s.</p>` : '';
-    status.innerHTML = `<p>state <b>${esc(s.state)}</b>, can_be_paid <b>${esc(s.can_be_paid)}</b>${s.engagement_id ? `, engagement <code>${esc(s.engagement_id)}</code>` : ''}</p><ul>${rows}</ul>` +
-      (s.can_be_paid ? '<p class="ok">The freelancer can be paid. Go to the <a href="/">back office</a> and issue the first invoice.</p>' : waiting);
-    if (over) clearInterval(timer);
-  };
 
   // The session's rows in plain words: what step 2 also names, in its words
   // (views/company.ts), the tax country as the join form calls it, and any
@@ -51,6 +53,41 @@
     ['country', 'tax country'],
   ]);
   const plainRow = r => `${ROW_NAMES.get(r.key) ?? String(r.key).replaceAll('_', ' ')} (${String(r.state).replaceAll('_', ' ')})`;
+
+  // The signup the join page opened is done: the done card takes the form's
+  // place, and the focus the form held, and nothing the note said about the
+  // signup still applies.
+  const showDone = () => {
+    if (!done.hidden) return;
+    start.hidden = true;
+    done.hidden = false;
+    said = '';
+    progress = '';
+    document.getElementById('join-done-title').focus();
+  };
+
+  // The join page. The console shows the session as Abillio answers it, its
+  // state and its rows by their keys, and until the freelancer can be paid
+  // what Abillio is still waiting on. The poll stops once they can be paid or
+  // the link is over. For the signup this page opened, the card says it in
+  // plain words: what is still open, so a popup closed half way does not read
+  // as nothing having happened, and once Abillio confirms they can be paid,
+  // the done card.
+  const renderJoin = s => {
+    const rows = (s.requirements || []).map(r => `<li><code>${esc(r.key)}</code> ${esc(r.state)}</li>`).join('');
+    const over = s.can_be_paid || s.state === 'complete' || s.state === 'expired';
+    const open = (s.requirements || []).filter(r => r.state !== 'done').map(r => `<code>${esc(r.key)}</code> ${esc(r.state)}`).join(', ');
+    const waiting = s.state !== 'none' && !over ? `<p class="muted">Not payable yet${open ? ` — Abillio is still waiting on: ${open}` : ''}. The page keeps asking every 3 s.</p>` : '';
+    status.innerHTML = `<p>state <b>${esc(s.state)}</b>, can_be_paid <b>${esc(s.can_be_paid)}</b>${s.engagement_id ? `, engagement <code>${esc(s.engagement_id)}</code>` : ''}</p><ul>${rows}</ul>` +
+      (s.can_be_paid ? '<p class="ok">The freelancer can be paid. Go to the <a href="/">back office</a> and issue the first invoice.</p>' : waiting);
+    if (over) clearInterval(timer);
+    if (!ours || !done.hidden) return;
+    if (s.can_be_paid || s.state === 'complete') { showDone(); return; }
+    const left = (s.requirements || []).filter(r => r.state !== 'done').map(plainRow).join('; ');
+    if (s.state === 'expired') progress = 'The link expired before your setup was finished: press Continue with Abillio for a new one.';
+    else if (s.state === 'none') progress = 'This walk was reset — reload the page.';
+    else progress = `Your setup is not finished yet.${left ? ` Still open: ${left}.` : ''} This page checks again every 3 s.`;
+  };
 
   // The back office follows an update link on its `state`, never on
   // `can_be_paid`: a freelancer can be payable while the link still has
@@ -114,9 +151,15 @@
   window.addEventListener('message', event => {
     if (!abillioOrigin || event.origin !== abillioOrigin) return;
     if (!event.data || event.data.source !== 'abillio') return;
-    said = `Abillio says: state ${event.data.state}, can_be_paid ${event.data.can_be_paid} (session ${event.data.session_id}).`;
+    const line = `Abillio says: state ${event.data.state}, can_be_paid ${event.data.can_be_paid} (session ${event.data.session_id}).`;
+    if (!join) { said = line; sayNote(); follow(); return; }
+    // The join page keeps the line itself in the console and says in the card
+    // what it means. The status check that follows stores it on the server.
+    heard.textContent = line;
+    ours = true;
+    if (event.data.can_be_paid === true || event.data.state === 'complete') showDone();
     sayNote();
-    if (join) poll(); else follow();
+    poll();
   });
 
   form.addEventListener('submit', async event => {
@@ -140,6 +183,8 @@
     }
     const session = await res.json();
     abillioOrigin = session.origin;
+    ours = true;
+    progress = '';
     said = popup ? '' : `Popup blocked — open ${session.url} yourself.`;
     sayNote();
     if (popup) popup.location = session.url;

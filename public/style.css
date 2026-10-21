@@ -842,6 +842,10 @@ p.error { margin: 10px 0 0; font-size: var(--text-sm); color: var(--danger); }
 .join > .console { grid-area: session; margin: 0; background: transparent; padding: 24px 0 0; border: 0; border-top: 1px solid var(--line-strong); border-radius: 0; }
 .join-card > p.note:not(:empty) { margin-top: 24px; padding: 0; background: transparent; color: var(--muted); border: 0; border-radius: 0; font-size: 0.8125rem; line-height: 1.6; }
 .join-card > p.join-handoff { margin: 16px 0 0; color: var(--muted); font-size: var(--text-sm); text-align: center; line-height: 1.6; }
+/* The card once Abillio has confirmed the signup: what it means, then the
+   one action, as wide and as tall as the form's Continue. */
+.join-done > p { margin: 0 0 28px; color: var(--ink-2); font-size: 1rem; line-height: 1.6; }
+.join-done > .button-link { width: 100%; min-height: 48px; font-size: var(--text-md); }
 .join-technical > summary { display: flex; align-items: center; gap: 10px; color: var(--muted); font-size: var(--text-sm); }
 .join-technical > summary:hover { color: var(--accent); }
 .join-technical[open] > summary { margin-bottom: 20px; }

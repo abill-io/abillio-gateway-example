@@ -4,6 +4,9 @@ import { stepStatuses } from './partials.ts';
 
 // The freelancer sees the partner's invitation and why they need Abillio.
 // Integration diagnostics stay available in a disclosure for demo viewers.
+// The card holds the form until Abillio confirms the signup this page opened;
+// public/popup.js then shows the done card in its place (#join-done, rendered
+// hidden) and puts the popup's own message under the disclosure.
 export function joinPage(state: State, abillioOrigin: string | null): string {
   const f = state.freelancer;
   return page('Join Your Company', `<main id="main" class="join">
@@ -16,7 +19,7 @@ export function joinPage(state: State, abillioOrigin: string | null): string {
         <li><span class="join-step-number" aria-hidden="true">3</span><div><h2>Get ready to be paid</h2><p>Once Abillio confirms your setup, Your Company can issue invoices in your name and pay you for your work.</p></div></li>
       </ol>
     </section>
-    <section class="panel join-card" aria-labelledby="join-form-title">
+    <section class="panel join-card" id="join-start" aria-labelledby="join-form-title">
       <h2 id="join-form-title">Connect with Abillio</h2>
       <p class="join-form-intro">Your first step to receiving payments from Your Company.</p>
       <p class="note">This demo is shared: what you type here is shown to everyone who opens it. Keep the made-up name and the @example.com address, and use test details in the popup.</p>
@@ -31,6 +34,11 @@ export function joinPage(state: State, abillioOrigin: string | null): string {
       <p class="join-handoff">Abillio opens in a separate window. You’ll return here when you finish your setup.</p>
       <p id="popup-note" class="note" aria-live="polite"></p>
     </section>
+    <section class="panel join-card join-done" id="join-done" aria-labelledby="join-done-title" hidden>
+      <h2 id="join-done-title" tabindex="-1">You’re set up</h2>
+      <p>Abillio confirmed you can be paid. Your Company can now issue your first invoice.</p>
+      <a class="button-link" href="/">Back to company view</a>
+    </section>
     <details class="console join-technical" id="session">
       <summary>How this demo connects to Abillio</summary>
       <p class="muted">This is the partner's own sign-up page. The form posts to the partner's server, which mints an Abillio onboarding session; the browser only opens the link Abillio returns.</p>
@@ -38,6 +46,7 @@ export function joinPage(state: State, abillioOrigin: string | null): string {
       <h2 id="session-title">Session status</h2>
       <p class="muted">The server polls <code>GET /onboarding/sessions/{id}</code> every 3 s until <code>can_be_paid</code> is true. The popup also posts a message when it closes.</p>
       <div id="status">${f ? `<p>Session <code>${esc(f.session_id)}</code> for <b>${esc(f.email)}</b>.</p>` : '<p class="empty">No session yet.</p>'}</div>
+      <p id="popup-message" class="note"></p>
     </details>
   </main>
   <script src="/public/popup.js"></script>`, { current: 'join' });

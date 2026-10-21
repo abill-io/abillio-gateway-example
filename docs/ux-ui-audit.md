@@ -74,8 +74,11 @@ single-use link; it must not reuse a spent URL or start an unrelated signup.
 
 **0.1.7:** for a freelancer whose setup reopens after onboarding, step 2's
 **Send a new link** is that resume action: it keeps the stored freelancer and
-mints an update link for the same address, opened from the click. The join
-page's own completion states are unchanged.
+mints an update link for the same address, opened from the click. After its own
+Continue, the join page now names what is still open in plain words, and once
+Abillio says the freelancer can be paid the form gives way to **You’re set
+up** with **Back to company view** as the primary action; the popup's raw
+message moved under **How this demo connects to Abillio**.
 
 Sources: [join view](../views/join.ts#L23),
 [popup feedback](../public/popup.js#L34),
