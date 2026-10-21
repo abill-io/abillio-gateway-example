@@ -7,11 +7,19 @@ const source = readFileSync(new URL('../public/popup.js', import.meta.url), 'utf
 
 type Answer = () => Response;
 
+// Where the page that opens the popup sits: its window's position and outer
+// size, and the screen's usable area, as the browser reports them.
+type Geometry = { screenX: number; screenY: number; outerWidth: number; outerHeight: number; availWidth: number; availHeight: number };
+const DESKTOP: Geometry = { screenX: 100, screenY: 50, outerWidth: 1280, outerHeight: 900, availWidth: 1920, availHeight: 1050 };
+// The same, as the window's own fields and its `screen`.
+const placed = ({ availWidth, availHeight, ...frame }: Geometry) => ({ ...frame, screen: { availWidth, availHeight } });
+
 // public/popup.js on a join page as the server renders it, in a context with
 // just what the script touches: the form, the note, the status console, the
 // window, fetch and the timers. `stored` is whether the server rendered the
-// page with a session stored (the form's data-session).
-function joinPage(stored: boolean, answers: Record<string, Answer>) {
+// page with a session stored (the form's data-session). `opened` records
+// every window.open call.
+function joinPage(stored: boolean, answers: Record<string, Answer>, geometry: Geometry = DESKTOP) {
   const handlers: Record<string, (event: unknown) => unknown> = {};
   const button = { disabled: false };
   const form = {
@@ -23,9 +31,10 @@ function joinPage(stored: boolean, answers: Record<string, Answer>) {
   const status = { innerHTML: '' };
   const fetched: string[] = [];
   const ticks: (() => void)[] = [];
+  const opened: string[][] = [];
   runInNewContext(source, {
     document: { getElementById: (id: string) => ({ join: form, 'popup-note': note, status } as Record<string, unknown>)[id] ?? null },
-    window: { addEventListener: () => {}, open: () => ({ location: '', close: () => {} }) },
+    window: { ...placed(geometry), addEventListener: () => {}, open: (...args: string[]) => { opened.push(args); return { location: '', close: () => {} }; } },
     fetch: async (url: string) => { fetched.push(url); return answers[url](); },
     setInterval: (fn: () => void) => { ticks.push(fn); return ticks.length; },
     clearInterval: () => {},
@@ -33,7 +42,7 @@ function joinPage(stored: boolean, answers: Record<string, Answer>) {
     FormData: class { *[Symbol.iterator]() { yield ['email', 'anna+x@example.com']; } },
   });
   const settle = () => new Promise(resolve => setImmediate(resolve));
-  return { handlers, button, note, status, fetched, ticks, settle };
+  return { handlers, button, note, status, fetched, ticks, opened, settle };
 }
 
 const json = (body: unknown) => () => new Response(JSON.stringify(body), { status: 200, headers: { 'content-type': 'application/json' } });
@@ -94,6 +103,24 @@ test('Continue is given back once the link is minted: each press is a new link, 
   assert.equal(page.button.disabled, false);
 });
 
+test('the popup opens 640 by 820, no larger than the screen, centred over the page that opened it', async () => {
+  const minted = json({ session_id: 's1', url: 'https://new.abillio.dev/s/tok', origin: 'https://new.abillio.dev' });
+  const cases: [string, Geometry, Record<string, string>][] = [
+    // (1280 - 640) / 2 and (900 - 820) / 2 from the window's corner.
+    ['a desktop window', DESKTOP, { width: '640', height: '820', left: '420', top: '90' }],
+    // A 1366x768 laptop, the page maximised: the height is what the screen has.
+    ['a screen shorter than the popup', { screenX: 0, screenY: 0, outerWidth: 1366, outerHeight: 738, availWidth: 1366, availHeight: 738 }, { width: '640', height: '738', left: '363', top: '0' }],
+  ];
+  for (const [label, geometry, size] of cases) {
+    const page = joinPage(false, { '/join': minted, '/join/status': inProgress }, geometry);
+    await page.handlers.submit({ preventDefault: () => {} });
+    const [url, name, features] = page.opened[0];
+    assert.deepEqual([url, name], ['about:blank', 'abillio'], `${label}: opened blank on the click, pointed at the link once it is minted`);
+    const parsed = Object.fromEntries(features.split(',').map(feature => [feature.split('=')[0], feature.split('=')[1] ?? '']));
+    assert.deepEqual(parsed, { popup: '', ...size }, label);
+  }
+});
+
 // public/popup.js on the back office with step 2's Send a new link: the
 // update form (#update-link) and its note, no join form and no status
 // console, and a page that can load itself again.
@@ -114,7 +141,7 @@ function officePage(answers: Record<string, Answer>) {
   const navigation: string[] = [];
   runInNewContext(source, {
     document: { getElementById: (id: string) => ({ 'update-link': form, 'popup-note': note } as Record<string, unknown>)[id] ?? null },
-    window: { addEventListener: (type: string, fn: (event: unknown) => unknown) => { if (type === 'message') messages.push(fn); }, open: () => popup },
+    window: { ...placed(DESKTOP), addEventListener: (type: string, fn: (event: unknown) => unknown) => { if (type === 'message') messages.push(fn); }, open: () => popup },
     location: { replace: (url: string) => { navigation.push(url); } },
     fetch: async (url: string) => { fetched.push(url); return answers[url](); },
     setInterval: (fn: () => void) => { ticks.push(fn); return ticks.length; },

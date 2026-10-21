@@ -498,11 +498,14 @@ answered with `201`:
 ```
 
 `public/popup.js` opens the popup synchronously on the click, as
-`window.open('about:blank', 'abillio', 'popup,width=520,height=760')`, so the
-browser allows it, and points it at `url` once the server has answered. In the
-popup the freelancer gives consent, verifies their identity and adds a payout
-method. The last page offers **Back to** and the company's name; pressed, the
-popup posts one message to the window that opened it and closes itself:
+`window.open('about:blank', 'abillio', 'popup,width=640,height=820,left=…,top=…')`,
+so the browser allows it, and points it at `url` once the server has answered.
+The window is 640 by 820 (no larger than the screen), centred over the page
+that opened it: `left` and `top` come from the page's `screenX`/`screenY` and
+its outer size. In the popup the freelancer gives consent, verifies their
+identity and adds a payout method. The last page offers **Back to** and the
+company's name; pressed, the popup posts one message to the window that opened
+it and closes itself:
 
 ```json
 { "source": "abillio", "session_id": "01a155e7-3f25-…", "purpose": "onboarding", "state": "complete", "can_be_paid": true }

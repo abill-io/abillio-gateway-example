@@ -87,6 +87,16 @@
     sayNote();
   };
 
+  // The popup is 640 by 820, or as much of that as the screen has room for,
+  // centred over the window that opened it.
+  const popupFeatures = () => {
+    const width = Math.min(640, window.screen.availWidth);
+    const height = Math.min(820, window.screen.availHeight);
+    const left = Math.round(window.screenX + (window.outerWidth - width) / 2);
+    const top = Math.round(window.screenY + (window.outerHeight - height) / 2);
+    return `popup,width=${width},height=${height},left=${left},top=${top}`;
+  };
+
   // Polls until the session is over (render stops it).
   const follow = () => {
     clearInterval(timer);
@@ -113,7 +123,7 @@
     event.preventDefault();
     // Open the window synchronously on the click so browsers allow the popup;
     // the URL is set once the server has minted the session.
-    popup = window.open('about:blank', 'abillio', 'popup,width=520,height=760');
+    popup = window.open('about:blank', 'abillio', popupFeatures());
     const res = await fetch(join ? '/join' : '/steps/onboard/update-link', { method: 'POST', body: new URLSearchParams(new FormData(form)) });
     if (!res.ok) {
       popup && popup.close();
