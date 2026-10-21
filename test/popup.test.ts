@@ -93,3 +93,98 @@ test('Continue is given back once the link is minted: each press is a new link, 
   await submitted;
   assert.equal(page.button.disabled, false);
 });
+
+// public/popup.js on the back office with step 2's Send a new link: the
+// update form (#update-link) and its note, no join form and no status
+// console, and a page that can load itself again.
+function officePage(answers: Record<string, Answer>) {
+  const handlers: Record<string, (event: unknown) => unknown> = {};
+  const messages: ((event: unknown) => unknown)[] = [];
+  const button = { disabled: false };
+  const form = {
+    dataset: { origin: 'https://new.abillio.dev' },
+    addEventListener: (type: string, fn: (event: unknown) => unknown) => { handlers[type] = fn; },
+    querySelectorAll: () => [button],
+  };
+  const note = { textContent: '' };
+  const popup = { location: '', closed: false, close() { this.closed = true; } };
+  const fetched: string[] = [];
+  const ticks: (() => void)[] = [];
+  const stopped: number[] = [];
+  const navigation: string[] = [];
+  runInNewContext(source, {
+    document: { getElementById: (id: string) => ({ 'update-link': form, 'popup-note': note } as Record<string, unknown>)[id] ?? null },
+    window: { addEventListener: (type: string, fn: (event: unknown) => unknown) => { if (type === 'message') messages.push(fn); }, open: () => popup },
+    location: { replace: (url: string) => { navigation.push(url); } },
+    fetch: async (url: string) => { fetched.push(url); return answers[url](); },
+    setInterval: (fn: () => void) => { ticks.push(fn); return ticks.length; },
+    clearInterval: (id: number | null) => { if (id) stopped.push(id); },
+    URLSearchParams,
+    FormData: class { *[Symbol.iterator]() {} },
+  });
+  const settle = () => new Promise(resolve => setImmediate(resolve));
+  const press = async () => {
+    const submitted = handlers.submit({ preventDefault: () => {} });
+    // app.js disables the form's button a tick after the submit.
+    button.disabled = true;
+    await submitted;
+    await settle();
+  };
+  const message = (origin: string, data: unknown) => { for (const fn of messages) fn({ origin, data }); };
+  return { button, note, popup, fetched, ticks, stopped, navigation, settle, press, message };
+}
+
+const minted = json({ session_id: 's2', url: 'https://new.abillio.dev/s/tok2', origin: 'https://new.abillio.dev', purpose: 'update' });
+const updateStatus = (state: string, can_be_paid: boolean) => json({ state, can_be_paid, purpose: 'update', requirements: [{ key: 'kyc', state: state === 'complete' ? 'done' : 'not_started' }], engagement_id: 'e1' });
+
+test('Send a new link opens the popup from the click, points it at the update link and follows the session; once the link has done its job the back office loads again', async () => {
+  let status = updateStatus('awaiting_freelancer', false);
+  const page = officePage({ '/steps/onboard/update-link': minted, '/join/status': () => status() });
+  await page.settle();
+  assert.deepEqual(page.fetched, [], 'nothing on load: the stored session may still be the first link, long done');
+  await page.press();
+  assert.equal(page.popup.location, 'https://new.abillio.dev/s/tok2');
+  assert.equal(page.button.disabled, false, 'given back: another press reopens the same link while it is open');
+  assert.deepEqual(page.fetched, ['/steps/onboard/update-link', '/join/status']);
+  assert.equal(page.ticks.length, 1, 'and keeps asking every 3 s');
+  assert.equal(page.note.textContent, 'Waiting for the freelancer in the Abillio window (still open: kyc not_started). This page asks again every 3 s.');
+  status = updateStatus('complete', true);
+  page.ticks[0]();
+  await page.settle();
+  assert.deepEqual(page.stopped, [1]);
+  assert.deepEqual(page.navigation, ['/'], 'step 2 reads what the server stored');
+});
+
+test('an update link is followed on its state, not on can_be_paid: payable with the link still open keeps the page waiting, and an expired link stops it with what to do next', async () => {
+  let status = updateStatus('in_progress', true);
+  const page = officePage({ '/steps/onboard/update-link': minted, '/join/status': () => status() });
+  await page.press();
+  assert.deepEqual([page.stopped, page.navigation], [[], []], 'a withdrawn mandate leaves them payable while the link is still open');
+  status = updateStatus('expired', false);
+  page.ticks[0]();
+  await page.settle();
+  assert.deepEqual(page.stopped, [1]);
+  assert.equal(page.note.textContent, 'The link expired before it was finished: send a new link.');
+  assert.deepEqual(page.navigation, []);
+});
+
+test('a refused update link is said in the note, the popup closes and the button comes back', async () => {
+  const page = officePage({ '/steps/onboard/update-link': () => new Response('requirements_complete: Nothing left to complete.', { status: 502 }) });
+  await page.press();
+  assert.equal(page.note.textContent, 'Could not send a new link: requirements_complete: Nothing left to complete.');
+  assert.equal(page.popup.closed, true);
+  assert.equal(page.button.disabled, false);
+  assert.deepEqual(page.fetched, ['/steps/onboard/update-link'], 'and nothing is followed');
+});
+
+test("on the back office a message from Abillio's popup starts the follow; one from another origin, or without Abillio's marker, is ignored", async () => {
+  const page = officePage({ '/join/status': updateStatus('complete', true) });
+  page.message('https://evil.example', { source: 'abillio', session_id: 's2', state: 'complete' });
+  page.message('https://new.abillio.dev', { source: 'someone', session_id: 's2', state: 'complete' });
+  await page.settle();
+  assert.deepEqual(page.fetched, []);
+  page.message('https://new.abillio.dev', { source: 'abillio', session_id: 's2', purpose: 'update', state: 'complete', can_be_paid: true });
+  await page.settle();
+  assert.deepEqual(page.fetched, ['/join/status']);
+  assert.deepEqual(page.navigation, ['/']);
+});
