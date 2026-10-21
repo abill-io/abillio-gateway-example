@@ -255,7 +255,7 @@ For UI changes, start here:
 | `views/layout.ts` | Document head, home link, page navigation, theme control and company introduction. |
 | `views/partials.ts` | Step summaries, completion markers, status tags, errors and request traces. |
 | `views/company.ts` | The five company steps and their expanded content. |
-| `views/join.ts` | The freelancer invitation, signup form, its done state and session diagnostics. |
+| `views/join.ts` | The freelancer invitation, signup form, its status box and done state, and session diagnostics. |
 | `public/theme.js` | System theme detection and the saved light/dark preference. |
 | `public/steps.js` | Opening folded content targeted by a URL fragment. |
 | `public/app.js` | Form submission feedback and company-view refreshes when updates arrive. |
@@ -523,8 +523,11 @@ trusts the message only when `event.origin` is Abillio's (taken from the session
 url) and `data.source` is `"abillio"`.
 
 The join page answers the freelancer in plain words. While their setup is open,
-the note under the form names what is still open (**identity verification (in
-progress)**, not `kyc in_progress`). Once the message, or a status check, says
+a status box under the form says **Your setup is not finished yet**, names each
+step still open as a pill (**identity verification** in progress, not
+`kyc in_progress`) and, at its foot, that the page checks again every three
+seconds; a link that expires, or a walk started over, empties it and the note
+under it says what to do. Once the message, or a status check, says
 they can be paid (`can_be_paid: true` or `state: "complete"`), the form gives
 way to **You’re set up**, one sentence and **Back to company view** as the
 primary action. The message itself is kept under **How this demo connects to

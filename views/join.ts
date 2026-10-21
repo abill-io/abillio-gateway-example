@@ -5,8 +5,10 @@ import { stepStatuses } from './partials.ts';
 // The freelancer sees the partner's invitation and why they need Abillio.
 // Integration diagnostics stay available in a disclosure for demo viewers.
 // The card holds the form until Abillio confirms the signup this page opened;
-// public/popup.js then shows the done card in its place (#join-done, rendered
-// hidden) and puts the popup's own message under the disclosure.
+// meanwhile public/popup.js says in the status box (#setup-status, rendered
+// empty, which folds it away) what is still open, then shows the done card in
+// the form's place (#join-done, rendered hidden) and puts the popup's own
+// message under the disclosure.
 export function joinPage(state: State, abillioOrigin: string | null): string {
   const f = state.freelancer;
   return page('Join Your Company', `<main id="main" class="join">
@@ -32,6 +34,7 @@ export function joinPage(state: State, abillioOrigin: string | null): string {
         <button class="wide">Continue with Abillio</button>
       </form>
       <p class="join-handoff">Abillio opens in a separate window. You’ll return here when you finish your setup.</p>
+      <div id="setup-status" class="setup-status" role="status"></div>
       <p id="popup-note" class="note" aria-live="polite"></p>
     </section>
     <section class="panel join-card join-done" id="join-done" aria-labelledby="join-done-title" hidden>

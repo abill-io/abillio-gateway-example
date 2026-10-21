@@ -17,10 +17,11 @@ const DESKTOP: Geometry = { screenX: 100, screenY: 50, outerWidth: 1280, outerHe
 const placed = ({ availWidth, availHeight, ...frame }: Geometry) => ({ ...frame, screen: { availWidth, availHeight } });
 
 // public/popup.js on a join page as the server renders it, in a context with
-// just what the script touches: the form's card (#join-start) and the done
-// card that takes its place (#join-done, hidden, with its heading), the note,
-// the status console and the popup's own line under it (#popup-message), the
-// window, fetch and the timers. `stored` is whether the server rendered the
+// just what the script touches: the form's card (#join-start) with its status
+// box (#setup-status, empty) and the done card that takes its place
+// (#join-done, hidden, with its heading), the note, the status console and
+// the popup's own line under it (#popup-message), the window, fetch and the
+// timers. `stored` is whether the server rendered the
 // page with a session stored (the form's data-session). `opened` records
 // every window.open call.
 function joinPage(stored: boolean, answers: Record<string, Answer>, geometry: Geometry = DESKTOP) {
@@ -38,11 +39,12 @@ function joinPage(stored: boolean, answers: Record<string, Answer>, geometry: Ge
   const done = { hidden: true };
   const heading = { focused: false, focus() { this.focused = true; } };
   const heard = { textContent: '' };
+  const box = { innerHTML: '' };
   const fetched: string[] = [];
   const ticks: (() => void)[] = [];
   const stopped: number[] = [];
   const opened: string[][] = [];
-  const elements: Record<string, unknown> = { join: form, 'popup-note': note, status, 'join-start': start, 'join-done': done, 'join-done-title': heading, 'popup-message': heard };
+  const elements: Record<string, unknown> = { join: form, 'popup-note': note, status, 'join-start': start, 'setup-status': box, 'join-done': done, 'join-done-title': heading, 'popup-message': heard };
   runInNewContext(source, {
     document: { getElementById: (id: string) => elements[id] ?? null },
     window: { ...placed(geometry), addEventListener: (type: string, fn: (event: unknown) => unknown) => { if (type === 'message') messages.push(fn); }, open: (...args: string[]) => { opened.push(args); return { location: '', close: () => {} }; } },
@@ -60,8 +62,21 @@ function joinPage(stored: boolean, answers: Record<string, Answer>, geometry: Ge
   const message = (origin: string, data: unknown) => { for (const fn of messages) fn({ origin, data }); };
   // Which of the card's two faces shows.
   const card = () => (done.hidden ? (start.hidden ? 'neither' : 'form') : start.hidden ? 'done' : 'both');
-  return { handlers, button, note, status, heading, heard, fetched, ticks, stopped, opened, settle, press, message, card };
+  return { handlers, button, note, status, heading, heard, box, fetched, ticks, stopped, opened, settle, press, message, card };
 }
+
+// What the status box says, read off the markup popup.js writes into it: its
+// bold first line, one [what, state] pair per pill, and the line at its foot.
+// null for an empty box, which the page does not show.
+function statusBox(html: string | undefined) {
+  if (!html) return null;
+  return {
+    title: /<p class="setup-status-title">([^<]*)<\/p>/.exec(html)?.[1],
+    pills: [...html.matchAll(/<li><span class="setup-status-what">([^<]*)<\/span> <span class="setup-status-state">([^<]*)<\/span><\/li>/g)].map(m => [m[1], m[2]]),
+    foot: /<p class="setup-status-poll">([^<]*)<\/p>/.exec(html)?.[1],
+  };
+}
+const openBox = (pills: string[][]) => ({ title: 'Your setup is not finished yet', pills, foot: 'This page checks again every 3 s.' });
 
 const json = (body: unknown) => () => new Response(JSON.stringify(body), { status: 200, headers: { 'content-type': 'application/json' } });
 const inProgress = json({ state: 'in_progress', can_be_paid: false, requirements: [{ key: 'kyc', state: 'in_progress' }], engagement_id: null });
@@ -124,15 +139,18 @@ test('Continue is given back once the link is minted: each press is a new link, 
 const firstLink = json({ session_id: 's1', url: 'https://new.abillio.dev/s/tok', origin: 'https://new.abillio.dev' });
 const payable = json({ state: 'complete', can_be_paid: true, purpose: 'onboarding', requirements: [{ key: 'kyc', state: 'done' }, { key: 'payout_method', state: 'done' }], engagement_id: 'e1' });
 
-test("after Continue the card says in plain words what is still open; once Abillio's popup says they can be paid it says they are set up, and the popup's raw line goes under How this demo connects to Abillio", async () => {
-  let status = json({ state: 'in_progress', can_be_paid: false, purpose: 'onboarding', requirements: [{ key: 'profile', state: 'done' }, { key: 'kyc', state: 'in_progress' }, { key: 'payout_method', state: 'not_started' }], engagement_id: 'e1' });
+test("after Continue the card's status box names each step still open as a pill, in plain words; once Abillio's popup says they can be paid the box goes, the card says they are set up, and the popup's raw line goes under How this demo connects to Abillio", async () => {
+  const open = [{ key: 'profile', state: 'done' }, { key: 'kyc', state: 'not_started' }, { key: 'payout_method', state: 'not_started' }, { key: 'member_fee', state: 'not_started' }, { key: 'engagement', state: 'in_progress' }];
+  let status = json({ state: 'in_progress', can_be_paid: false, purpose: 'onboarding', requirements: open, engagement_id: 'e1' });
   const page = joinPage(false, { '/join': firstLink, '/join/status': () => status() });
   await page.press();
-  assert.equal(page.note.textContent, 'Your setup is not finished yet. Still open: identity verification (in progress); payout method (not started). This page checks again every 3 s.');
+  assert.deepEqual(statusBox(page.box.innerHTML), openBox([['identity verification', 'not started'], ['payout method', 'not started'], ['membership fee', 'not started'], ['engagement', 'in progress']]));
+  assert.equal(page.note.textContent, '', 'the box says it, so the note does not');
   assert.equal(page.card(), 'form');
   status = payable;
   page.message('https://new.abillio.dev', { source: 'abillio', session_id: 's1', purpose: 'onboarding', state: 'complete', can_be_paid: true });
   assert.equal(page.card(), 'done', 'at once, on the message');
+  assert.equal(page.box.innerHTML, '', 'no box once they are set up');
   assert.equal(page.heading.focused, true, 'the form it replaces held the focus');
   assert.equal(page.note.textContent, '', 'nothing the card said about the signup still applies');
   assert.equal(page.heard.textContent, 'Abillio says: state complete, can_be_paid true (session s1).');
@@ -202,26 +220,38 @@ function onMarkup(html: string, answers: Record<string, Answer>) {
   };
 }
 
-test("on the join page's own markup a status tick and the completion message reach what the page has; a page an older server rendered, without the done card, has it all said in the note instead of a TypeError", async () => {
+test("on the join page's own markup a status tick and the completion message reach what the page has; a page an older server rendered, without the status box or the done card, has it said in the note instead of a TypeError", async () => {
   const rendered = joinView(defaultState(), null);
   // The page and this script are two requests, so the page can come from a
   // server older than the script: a process started before an update, or a
-  // rolling deploy part way through. Such a page has no done card and no
-  // place for the popup's line.
-  const older = rendered.replace(/<section[^>]*id="join-done"[\s\S]*?<\/section>/, '').replace(/<p id="popup-message"[^>]*><\/p>/, '').replace(' id="join-start"', '');
-  const cases: [string, string, boolean][] = [['the page as views/join.ts renders it', rendered, true], ['a page rendered before the done card', older, false]];
-  for (const [label, html, doneCard] of cases) {
+  // rolling deploy part way through. Such a page has no status box (0.1.8),
+  // and before that no done card and no place for the popup's line either.
+  const unboxed = rendered.replace(/<div id="setup-status"[^>]*><\/div>/, '');
+  const older = unboxed.replace(/<section[^>]*id="join-done"[\s\S]*?<\/section>/, '').replace(/<p id="popup-message"[^>]*><\/p>/, '').replace(' id="join-start"', '');
+  assert.notEqual(unboxed, rendered, 'the page has the status box to take out');
+  const cases: [string, string, boolean, boolean][] = [
+    ['the page as views/join.ts renders it', rendered, true, true],
+    ['a page rendered before the status box', unboxed, false, true],
+    ['a page rendered before the done card', older, false, false],
+  ];
+  for (const [label, html, box, doneCard] of cases) {
     let status = json({ state: 'in_progress', can_be_paid: false, purpose: 'onboarding', requirements: [{ key: 'profile', state: 'done' }, { key: 'kyc', state: 'in_progress' }], engagement_id: 'e1' });
     const page = onMarkup(html, { '/join': firstLink, '/join/status': () => status() });
     await page.press();
     await page.tick();
     const note = () => page.element('popup-note')?.textContent;
-    assert.equal(note(), 'Your setup is not finished yet. Still open: identity verification (in progress). This page checks again every 3 s.', `${label}: the tick reads the card and says what is open`);
+    if (box) {
+      assert.deepEqual(statusBox(page.element('setup-status')?.innerHTML), openBox([['identity verification', 'in progress']]), `${label}: the tick fills the status box`);
+      assert.equal(note(), '', label);
+    } else {
+      assert.equal(note(), 'Your setup is not finished yet. Still open: identity verification (in progress). This page checks again every 3 s.', `${label}: the tick reads the card and says what is open`);
+    }
     status = payable;
     page.message({ source: 'abillio', session_id: 's1', purpose: 'onboarding', state: 'complete', can_be_paid: true });
     await page.settle();
     assert.match(page.element('status')?.innerHTML ?? '', /^<p>state <b>complete<\/b>, can_be_paid <b>true<\/b>/, `${label}: the status element holds the session's answer`);
     assert.deepEqual(page.stopped, [1], `${label}: and the follow stops`);
+    if (box) assert.equal(page.element('setup-status')?.innerHTML, '', `${label}: no box once they are set up`);
     if (doneCard) {
       assert.deepEqual([page.element('join-start')?.hidden, page.element('join-done')?.hidden], [true, false], `${label}: the done card in the form's place`);
       assert.deepEqual([page.element('join-done-title')?.textContent, page.element('join-done-title')?.focused], ['You’re set up', true], label);

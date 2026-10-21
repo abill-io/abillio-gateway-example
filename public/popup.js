@@ -25,6 +25,9 @@
   const doneTitle = document.getElementById('join-done-title');
   const heard = document.getElementById('popup-message');
   const doneCard = Boolean(start && done && doneTitle);
+  // Until then the card's status box (#setup-status) says what is still
+  // open. A page an older server rendered has none: the note says it.
+  const box = document.getElementById('setup-status');
   let abillioOrigin = form.dataset.origin || null;
   let popup = null;
   let timer = null;
@@ -60,7 +63,25 @@
     ['member_fee', 'membership fee'],
     ['country', 'tax country'],
   ]);
-  const plainRow = r => `${ROW_NAMES.get(r.key) ?? String(r.key).replaceAll('_', ' ')} (${String(r.state).replaceAll('_', ' ')})`;
+  const rowName = r => ROW_NAMES.get(r.key) ?? String(r.key).replaceAll('_', ' ');
+  const rowState = r => String(r.state).replaceAll('_', ' ');
+  const plainRow = r => `${rowName(r)} (${rowState(r)})`;
+
+  // The status box while the signup this page opened is not finished: a
+  // bold first line, one pill per step still open (its plain name, then
+  // Abillio's word for where it stands), and the poll at its foot. `rows`
+  // null empties it, and an empty box folds away. It is written only when
+  // what it says changes, so a screen reader hears it once per change, not
+  // on every tick.
+  let boxed = '';
+  const showStatus = rows => {
+    if (!box) return;
+    const pills = rows && rows.length ? `<ul class="setup-status-items">${rows.map(r => `<li><span class="setup-status-what">${esc(rowName(r))}</span> <span class="setup-status-state">${esc(rowState(r))}</span></li>`).join('')}</ul>` : '';
+    const html = rows ? `<p class="setup-status-title">Your setup is not finished yet</p>${pills}<p class="setup-status-poll">This page checks again every 3 s.</p>` : '';
+    if (html === boxed) return;
+    boxed = html;
+    box.innerHTML = html;
+  };
 
   // The signup the join page opened is done: the done card takes the form's
   // place, and the focus the form held, and nothing the note said about the
@@ -68,6 +89,7 @@
   const showDone = () => {
     if (finished) return;
     finished = true;
+    showStatus(null);
     said = '';
     progress = doneCard ? '' : 'You’re set up: Abillio confirmed you can be paid. Your Company can now issue your first invoice.';
     if (!doneCard) return;
@@ -93,10 +115,14 @@
     if (over) clearInterval(timer);
     if (!ours || finished) return;
     if (s.can_be_paid || s.state === 'complete') { showDone(); return; }
-    const left = (s.requirements || []).filter(r => r.state !== 'done').map(plainRow).join('; ');
+    // A link that is over, or a walk started over, is no setup in progress:
+    // the box goes, and the note says what to do.
+    const left = (s.requirements || []).filter(r => r.state !== 'done');
+    if (s.state === 'expired' || s.state === 'none') showStatus(null);
     if (s.state === 'expired') progress = 'The link expired before your setup was finished: press Continue with Abillio for a new one.';
     else if (s.state === 'none') progress = 'This walk was reset — reload the page.';
-    else progress = `Your setup is not finished yet.${left ? ` Still open: ${left}.` : ''} This page checks again every 3 s.`;
+    else if (box) { showStatus(left); progress = ''; }
+    else progress = `Your setup is not finished yet.${left.length ? ` Still open: ${left.map(plainRow).join('; ')}.` : ''} This page checks again every 3 s.`;
   };
 
   // The back office follows an update link on its `state`, never on

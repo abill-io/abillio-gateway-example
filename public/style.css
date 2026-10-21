@@ -67,6 +67,11 @@
   --danger: oklch(0.577 0.245 27.325);
   --danger-tint: var(--sunken);
   --danger-line: var(--danger);
+  /* Amber marks something still to do (the join page's status box), from
+     @abillio/ui's warning palette. */
+  --warning-ink: oklch(0.42 0.09 70);
+  --warning-tint: oklch(0.97 0.04 85);
+  --warning-line: oklch(0.86 0.08 85);
   --neutral-tint: var(--sunken);
   --field: var(--surface);
   --button-secondary: #111;
@@ -131,6 +136,9 @@
     --danger: oklch(0.704 0.191 22.216);
     --danger-tint: oklch(0.24 0.04 27.325);
     --danger-line: oklch(0.45 0.1 27.325);
+    --warning-ink: oklch(0.87 0.09 88);
+    --warning-tint: oklch(0.29 0.05 80);
+    --warning-line: oklch(0.42 0.07 80);
     --field: var(--paper);
     --button-secondary: #fff;
     --button-secondary-hover: #e4e4e7;
@@ -162,6 +170,9 @@
   --danger: oklch(0.704 0.191 22.216);
   --danger-tint: oklch(0.24 0.04 27.325);
   --danger-line: oklch(0.45 0.1 27.325);
+  --warning-ink: oklch(0.87 0.09 88);
+  --warning-tint: oklch(0.29 0.05 80);
+  --warning-line: oklch(0.42 0.07 80);
   --field: var(--paper);
   --button-secondary: #fff;
   --button-secondary-hover: #e4e4e7;
@@ -850,6 +861,40 @@ p.error { margin: 10px 0 0; font-size: var(--text-sm); color: var(--danger); }
    one action, as wide and as tall as the form's Continue. */
 .join-done > p { margin: 0 0 28px; color: var(--ink-2); font-size: 1rem; line-height: 1.6; }
 .join-done > .button-link { width: 100%; min-height: 48px; font-size: var(--text-md); }
+/* The card's status box while the signup it opened is not finished
+   (popup.js fills it): a bold first line, one pill per step still open, the
+   poll at its foot. The steps are plain words, not codes, so they are pills,
+   unlike the square-ish tags. Empty, the box folds to nothing but stays in
+   the page, so its status role is there to speak. */
+.setup-status {
+  margin-top: 24px;
+  padding: 16px 18px;
+  color: var(--ink);
+  background: var(--warning-tint);
+  border: 1px solid var(--warning-line);
+  border-radius: var(--radius-lg);
+}
+.setup-status:empty { margin: 0; padding: 0; border: 0; }
+.setup-status > p { margin: 0; }
+.setup-status-title { font-weight: 600; line-height: 1.5; }
+.setup-status-items { display: flex; flex-wrap: wrap; gap: 8px; margin: 12px 0 0; padding: 0; list-style: "\200B"; }
+.setup-status-items li {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0 6px;
+  padding: 3px 12px;
+  font-size: var(--text-sm);
+  line-height: 1.5;
+  color: var(--warning-ink);
+  background: var(--surface);
+  border: 1px solid var(--warning-line);
+  border-radius: 999px;
+  overflow-wrap: anywhere;
+}
+.setup-status-what { font-weight: 600; }
+.setup-status-state { font-weight: 400; }
+.setup-status > .setup-status-poll { margin-top: 12px; color: var(--muted); font-size: 0.8125rem; line-height: 1.6; }
 .join-technical > summary { display: flex; align-items: center; gap: 10px; color: var(--muted); font-size: var(--text-sm); }
 .join-technical > summary:hover { color: var(--accent); }
 .join-technical[open] > summary { margin-bottom: 20px; }
