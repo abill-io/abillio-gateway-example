@@ -130,8 +130,8 @@ const PKCS8_ED25519_PREFIX = Buffer.from('302e020100300506032b657004220420', 'he
 // key that can hold a person's data, the three the join page types included. A
 // request masks only the keys the page never types. `description` (the invoice
 // line the visitor types) is on neither list. The onboarding mint answers with
-// the freelancer's link as `url`: their bearer credential, spent on its first
-// open, so an answer masks that too.
+// the freelancer's link as `url`: their bearer credential until they act on
+// it, so an answer masks that too.
 const REQUEST_REDACTED_KEYS = new Set([
   'secret', 'private_key', 'password', 'token', 'user_email',
   'iban', 'account_number', 'personal_code', 'registration_number', 'vat_number', 'legal_name',

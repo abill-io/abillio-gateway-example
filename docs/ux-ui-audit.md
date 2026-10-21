@@ -72,6 +72,11 @@ completed states. Keep the success message and next action outside technical
 details. A resume action must retain the existing freelancer and mint a fresh
 single-use link; it must not reuse a spent URL or start an unrelated signup.
 
+**0.1.7:** for a freelancer whose setup reopens after onboarding, step 2's
+**Send a new link** is that resume action: it keeps the stored freelancer and
+mints an update link for the same address, opened from the click. The join
+page's own completion states are unchanged.
+
 Sources: [join view](../views/join.ts#L23),
 [popup feedback](../public/popup.js#L29),
 [company onboarding step](../views/company.ts#L47).

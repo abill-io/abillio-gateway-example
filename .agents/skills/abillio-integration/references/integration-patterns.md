@@ -67,7 +67,8 @@ and does not undo previously created freelancer records or payments.
 
 Read the guide's [gateway flow](https://backend.abillio.dev/company-api/#gateway)
 and [engagements](https://backend.abillio.dev/company-api/#engagements).
-The sample code is in `steps/02-onboard.ts` and `public/popup.js`.
+The sample code is in `steps/02-onboard.ts` and `public/popup.js`; the update
+link after a requirement reopens is `steps/02b-requirements.ts` (README step 2b).
 
 - Create the session on the server with the user's permitted prefill and an
   application-controlled `return_url`. Keep the session tied to the local user.
@@ -178,7 +179,7 @@ changes from delivered events and bound retry intervals.
 | Public `/`, `/api/state` and `/api/trace` | Authenticated authorization boundaries; private diagnostic access with PII and credential redaction |
 | In-memory request trace and bounded event list | Durable operation/audit records and webhook receipt storage appropriate to recovery needs |
 | One invoice per engagement in the walk | One operation identity per intended invoice, allowing repeated work without duplicate retries |
-| Sandbox deposit and payout simulators | Real funding instructions and actual payout status; no simulator calls outside sandbox |
+| Sandbox deposit, payout and requirement simulators | Real funding instructions, actual payout status and requirements that change on their own clock; no simulator calls outside sandbox |
 | Fixed sample company and EUR examples | Selected account, actual buyer, currency and serving company from the API |
 
 The example intentionally displays some entered names, email addresses and

@@ -51,6 +51,7 @@ Read the files for the current feature, not the whole sample.
 | Settings, signing, API errors | `.env.example`, `lib/env.ts`, `lib/abillio.ts`, `test/abillio.test.ts`, `test/vectors.json` |
 | Account and permissions | `steps/01-key.ts`, `test/step-key.test.ts` |
 | Signup link and session | `steps/02-onboard.ts`, `public/popup.js`, `test/step-onboard.test.ts`, `test/popup.test.ts` |
+| Update link after onboarding | `steps/02b-requirements.ts`, `public/popup.js`, `test/step-requirements.test.ts`, `test/popup.test.ts` |
 | Draft and issue invoice | `steps/03-issue.ts`, `test/step-issue.test.ts` |
 | Pay and follow payout | `steps/04-pay.ts`, `test/step-pay.test.ts` |
 | Webhook signature and delivery | `lib/webhooks.ts`, `steps/05-events.ts`, `test/webhooks.test.ts`, `test/step-events.test.ts` |

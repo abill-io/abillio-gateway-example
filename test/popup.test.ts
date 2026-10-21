@@ -55,7 +55,7 @@ test('while the freelancer cannot be paid, the status says what Abillio is still
   const cases: [string, Record<string, unknown>, string | undefined][] = [
     ['every requirement not done, in order', { state: 'in_progress', can_be_paid: false, requirements: [done, { key: 'kyc', state: 'in_progress' }, { key: 'payout_method', state: 'pending_review' }], engagement_id: 'e1' },
       '<p class="muted">Not payable yet — Abillio is still waiting on: <code>kyc</code> in_progress, <code>payout_method</code> pending_review. The page keeps asking every 3 s.</p>'],
-    ['the link not opened yet: Abillio lists nothing', { state: 'awaiting_freelancer', can_be_paid: false, requirements: [], engagement_id: null },
+    ['nobody has agreed yet: Abillio lists nothing', { state: 'awaiting_freelancer', can_be_paid: false, requirements: [], engagement_id: null },
       '<p class="muted">Not payable yet. The page keeps asking every 3 s.</p>'],
     ['payable', { state: 'complete', can_be_paid: true, requirements: [done], engagement_id: 'e1' },
       '<p class="ok">The freelancer can be paid. Go to the <a href="/">back office</a> and issue the first invoice.</p>'],

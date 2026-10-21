@@ -39,8 +39,8 @@ test('the progress line and the rail read where the walk stands off the stored s
     s.freelancer = { email: 'anna@example.com', session_id: 's1', session_url: 'https://new.abillio.dev/s/tok', engagement_id: 'e1', engagement_status: 'active', can_be_paid: true, servicing_company_slug: 'abillio-ks', requirements: null };
     return s;
   };
-  // The link was opened, so Abillio knows the engagement, but the freelancer
-  // has consented to nothing yet: what the owner met on the hosted copy.
+  // The freelancer agreed, so Abillio knows the engagement, but they cannot be
+  // paid yet: what the owner met on the hosted copy.
   const invited = (): State => {
     const s = joined();
     s.freelancer = { ...s.freelancer!, engagement_status: 'invited', can_be_paid: false };
@@ -141,7 +141,7 @@ test("GET /api/state returns the stored state as JSON, without the webhook secre
   // The key check stores the key id it was made with (the running one, or the
   // page would show no account at all); .env treats it as a secret.
   withSecret.account = sandboxState().account;
-  // The link is the freelancer's bearer credential, spent on its first open (guide §9).
+  // The link is the freelancer's bearer credential until they act on it (guide §9).
   const token = 't'.repeat(40) + 'wxyz';
   withSecret.freelancer = { email: 'anna@example.com', session_id: 's1', session_url: `https://new.abillio.dev/s/${token}`, engagement_id: null, engagement_status: null, can_be_paid: false, servicing_company_slug: null, requirements: null };
   const { app: app2 } = appWith((async () => ({})) as Api, memoryState(withSecret));
@@ -159,7 +159,7 @@ test("GET /api/state returns the stored state as JSON, without the webhook secre
 
 test('the join page opens the popup from the session url and polls the status', async () => {
   // Abillio's answers move as the freelancer goes on: the engagement is
-  // `invited` from the moment the link is opened, `active` once they can be paid.
+  // `invited` from when they agree, `active` once they can be paid.
   let payable = false;
   const api = (async (method: string, path: string) => {
     if (method === 'POST' && path === '/onboarding/sessions/') return { session_id: 's1', url: 'https://new.abillio.dev/s/tok', status: 'awaiting_freelancer', purpose: 'onboarding' };
@@ -182,7 +182,7 @@ test('the join page opens the popup from the session url and polls the status', 
   const body = await status.json();
   assert.equal(body.state, 'in_progress');
   assert.equal(body.engagement_id, 'e1');
-  assert.deepEqual(said(), { engagement_id: 'e1', engagement_status: 'invited', can_be_paid: false }, 'the link is opened: an engagement, not yet one that can be paid');
+  assert.deepEqual(said(), { engagement_id: 'e1', engagement_status: 'invited', can_be_paid: false }, 'they agreed: an engagement, not yet one that can be paid');
   payable = true;
   await app.request('/join/status');
   assert.deepEqual(said(), { engagement_id: 'e1', engagement_status: 'active', can_be_paid: true }, 'each check stores what Abillio says now');
@@ -1058,7 +1058,7 @@ test("an event about another walk (a reset's demo freelancers) is stored but not
 
 test('a completion heard by webhook makes step 2 done without the join page open, and a status check whose reads were out meanwhile does not set it back', async () => {
   const v = JSON.parse(readFileSync(new URL('./vectors.json', import.meta.url), 'utf8')).webhook;
-  // The link is opened (Abillio knows the engagement) and the freelancer is in the popup.
+  // They agreed (Abillio knows the engagement) and are still in the popup.
   const initial = joinedState();
   initial.freelancer = { ...initial.freelancer!, engagement_status: 'invited', can_be_paid: false };
   initial.webhook = { channel_id: 'ch1', subscription_id: 'sub1', secret: v.secret, url: 'https://x/webhooks/abillio' };

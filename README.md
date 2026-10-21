@@ -42,6 +42,12 @@ account setup in a separate window.
    reveals the optional bank-response simulators.
 5. Step 5 shows how many updates have arrived for this walkthrough. Without
    `PUBLIC_URL`, the server checks for updates automatically every five seconds.
+6. Back in step 2, **What happens later** plays what can stop a freelancer
+   from being paid after setup: **Identity lapses**, **Payout method removed**
+   or **Mandate withdrawn**. Step 2 then says what needs attention, and **Send
+   a new link** opens Abillio's window for the same freelancer; the step is
+   done again once they finish it (see
+   [step 2b](#step-2b--when-they-cannot-be-paid-any-more)).
 
 For a fresh installation **with `PUBLIC_URL`**, open step 5 and press
 **Connect webhooks** immediately after checking the key, before starting the
@@ -252,7 +258,7 @@ For UI changes, start here:
 | `public/steps.js` | Opening folded content targeted by a URL fragment. |
 | `public/app.js` | Form submission feedback and company-view refreshes when updates arrive. |
 | `lib/updates.ts` | A safe, plain-language summary of the latest event for this walkthrough. |
-| `public/popup.js` | Opening Abillio onboarding and following its session status. |
+| `public/popup.js` | Opening Abillio onboarding (the join page's first link, step 2's update link) and following its session status. |
 
 The visual conventions are flat surfaces without shadows, 10px card corners,
 a 1px blue border on the active/open step, blue primary actions and inverse
@@ -278,8 +284,8 @@ person, a phone number, an address, a bank account, a personal code or a
 registration or VAT number, as `lib/abillio.ts` lists them
 (`GET /accounts/clients/` returns a row for the account owner's own company,
 with the owner's e-mail and address on it), and the onboarding link the mint
-answers with (`url`), which is the freelancer's to open and is spent on its
-first open; in a request, only the keys no form
+answers with (`url`), which is the freelancer's to open and to act on; in a
+request, only the keys no form
 of the sample types, so the e-mail and names typed on the join page show as
 typed. Display names (`name`, `display_name`) are not masked: they are the
 company's own name and the name typed on the join page. Nor is free text:
@@ -289,7 +295,8 @@ whatever they say, so keep personal data out of them. The
 secret, the API key id and the freelancer's onboarding link (`session_url`) cut
 down to their last four characters; `GET /api/state` and `GET /api/trace` serve
 the same two things as JSON. The link reaches only the browser that pressed
-**Continue with Abillio**, in the `/join` answer. On the hosted copy everyone
+**Continue with Abillio**, in the `/join` answer, or **Send a new link**, in the
+`/steps/onboard/update-link` answer. On the hosted copy everyone
 shares one walk: the state, the trace and the made-up `@example.com` addresses
 in them are the same for every visitor, and **Start over** starts the walk over
 for everybody.
@@ -301,9 +308,12 @@ Abillio stores the answer to every `POST` and `PATCH` that carries an
 key comes back with the same body ([guide: retrying safely](https://backend.abillio.dev/company-api/#idempotency)).
 The sample's client refuses to send a `POST` or `PATCH` without a key, and every
 key is stored in `data/state.json` under the action it belongs to:
-`onboard:<e-mail>:<digest of the body>`, `draft:<engagement>`,
+`onboard:<e-mail>:<digest of the body>` (the join page's first link and step
+2b's update link alike: their bodies differ),
+`simulate-requirement:<engagement>:<kind>:<outcome>`, `draft:<engagement>`,
 `issue:<invoice>`, `pay:<invoice>`, `simulate:<payout>:<outcome>`,
-`webhook:channel` and `webhook:subscription`. A key is claimed in the store
+`webhook:channel` and `webhook:subscription`. The key itself is a UUID minted
+for its action. A key is claimed in the store
 **before** the call, so two overlapping presses, a restart or a crash mid-call
 send the same key instead of minting a second one.
 
@@ -351,14 +361,17 @@ answers `idempotency_key_reused`.
 A few actions deliberately take a fresh key on every press, because each press
 is meant to run again: the sandbox deposit, the test delivery, Start over, and
 Reconnect's `PATCH` in step 5 (it sets a destination, the secret and
-`is_enabled`, so it comes out the same however often it is sent). Two more are
-events rather than states, so
-their key is spent on any settled answer, a success included, and only an
-unknown outcome keeps it for the identical retry: the payout simulation, so
-`paid` after `returned` plays again instead of replaying the first `paid`, and
-the onboarding mint, because its link is single-use and the one answered before
-may already have been opened, so every press of **Continue with Abillio** mints
-a new link.
+`is_enabled`, so it comes out the same however often it is sent). Three more
+are events rather than states, so their key is spent on any settled answer, a
+success included, and only an unknown outcome keeps it for the identical
+retry: the payout simulation, so `paid` after `returned` plays again instead of
+replaying the first `paid`; the requirement simulation, so **Identity lapses**
+after the freelancer has verified again plays again; and the onboarding mint,
+first link and update link alike, because what it answers is a link the
+freelancer acts on once, so every press of **Continue with Abillio** or **Send
+a new link** mints again. Abillio decides whether that is a new link (an
+earlier first link nobody agreed to is replaced) or the same one (an update
+link that is still open).
 
 Two cases are worth knowing before you copy the pattern. Issuing and paying
 are not atomic (drafting is: a draft that failed leaves nothing behind, and its
@@ -378,7 +391,8 @@ the person who has to fix it.
 The responses in the chapters below were captured on Abillio's staging sandbox
 while the sample was walked twice: once without a public URL (the examples in
 step 2) and once through a tunnel (steps 3 to 5). Ids are shortened, and long
-answers are abridged to the fields the sample reads.
+answers are abridged to the fields the sample reads. Step 2b's are the
+expected shapes until the requirement simulator is on staging.
 
 ## Step 1 — Does the key work?
 
@@ -548,12 +562,13 @@ moment of the first lookup:
 ```
 
 The step writes `freelancer: { email, session_id, session_url, engagement_id,
-engagement_status, can_be_paid, servicing_company_slug }`, as Abillio last
-answered them. The engagement exists as soon as the link is opened, before the
-freelancer has consented to anything, so the back office counts the step done
-only once `can_be_paid` is true, from the status check or from an
-`engagement.onboarding.completed` for the session; until then the step reads
-**In progress**. While the freelancer cannot be paid yet, the back office makes
+engagement_status, can_be_paid, servicing_company_slug, requirements }`, as
+Abillio last answered them (`requirements` stays `null` until step 2b). The
+sample learns the engagement when they agree, long before they can be paid, so
+the back office counts the step done only once `can_be_paid` is true, from the
+status check or from an `engagement.onboarding.completed` for the session;
+until then the step reads **In progress**. While the freelancer cannot be paid
+yet, the back office makes
 the same status check each time it is opened (once the key is checked), so it
 catches up even when the join page was closed early and no webhook is
 connected. The serving company decides which balance the company's
@@ -579,6 +594,137 @@ changed form is a new attempt under a new key, since Abillio refuses a
 different body under a key it holds. An address with nothing left to complete
 answers `409 requirements_complete`. A production account refuses an `http`
 return URL with a 400.
+
+## Step 2b — When they cannot be paid any more
+
+The goal is to handle what happens after onboarding: something the freelancer
+set up stops counting, the engagement's `requirements` list it again, and the
+company sends them back to put it right, on the same engagement and without a
+second signup (`steps/02b-requirements.ts`, `public/popup.js`;
+[guide: gateway onboarding](https://backend.abillio.dev/company-api/#gateway),
+"After onboarding — an update link"). In production it happens on its own
+clock: an identity verification lapses, the freelancer removes their only
+payout method, or they withdraw the invoicing mandate. In the sandbox, once
+step 2 is done, **What happens later** plays each of them through the code
+path production runs, so the requirements and the events are the ones
+production sends.
+
+| Button | `POST /engagements/{engagement_id}/requirements/sandbox/simulate` | What Abillio runs |
+|---|---|---|
+| **Identity lapses** | `{ "kind": "identity_verification", "outcome": "expired" }` | the daily expiry sweep's own step: the approval lapses now, and every company engaging the freelancer hears `engagement.kyc.updated` with `kyc_status: expired` |
+| **Payout method removed** | `{ "kind": "payout_method", "outcome": "removed" }` | every usable payout method is removed the way the freelancer's own delete removes it |
+| **Mandate withdrawn** | `{ "kind": "mandate", "outcome": "revoked" }` | the freelancer's own withdrawal of the invoicing mandate |
+
+The call is the key's `sandbox.simulate`, under a key stored as
+`simulate-requirement:<engagement>:<kind>:<outcome>` and spent on any settled
+answer, like the payout simulation (see
+[Idempotency](#idempotency-the-one-rule-every-step-follows)). The simulator has
+one more pairing, `identity_verification` with `expiring` (an approval that
+lapses in seven days), which stops nothing, so the sample leaves it out.
+Abillio answers `200` with the engagement exactly as
+`GET /engagements/{engagement_id}` returns it. The expected shape for
+**Identity lapses**, abridged (captured on staging once the backend ships the
+simulator):
+
+```json
+{
+  "id": "<engagement id>",
+  "status": "active",
+  "compliance": { "kyc_status": "expired", "payout_ready": false, "can_be_paid": false },
+  "requirements": {
+    "status": "blocked",
+    "due": [
+      { "kind": "identity_verification", "state": "due", "blocks": ["payouts", "invoices"], "detail": "expired", "due_at": "<now>", "resource_id": null }
+    ],
+    "upcoming": []
+  }
+}
+```
+
+The step stores what that says on the freelancer: `can_be_paid` from
+`compliance.can_be_paid`, and `requirements` while their `status` is not
+`complete`. Step 2 then reads **In progress**, with *Setup needs attention:
+identity verification (expired).* Each item is said in plain words: the name
+of its `kind` and Abillio's `detail` (a word for a human, never branched on),
+with the deadline of an item still `upcoming`. `can_be_paid` alone no longer
+decides the step. It is about payouts only, and a withdrawn mandate
+stops invoicing, not payouts: **Mandate withdrawn** answers
+`can_be_paid: true` with
+`{ "kind": "mandate", "state": "due", "blocks": ["invoices"], "detail": "revoked", "resource_id": "<engagement id>" }`
+due, and the step is open all the same. Meanwhile step 3's issue call is
+refused with `409` and the blocker that names the gap (`kyc_missing`,
+`payout_method_missing` or `mandate_missing`), and Abillio announces the
+change with `engagement.requirements_updated`, which carries the new
+`status`, `due` and `upcoming`.
+
+A pairing whose precondition does not hold (the identity is not approved, no
+usable payout method is left, no mandate is in force) answers
+`409 requirement_transition_not_allowed`, its message saying why, and writes
+nothing, so the same button pressed twice answers that the second time. The
+error shows in step 2 like any refusal. A live key, or an engagement that is
+not this account's, gets `404`.
+
+**Send a new link** mints the update link: the same `POST /onboarding/sessions/`
+as the join page's, for the stored address, keyed on the address and a digest
+of the body and spent on any answer, like the first mint:
+
+```json
+{ "email": "anna+…@example.com", "return_url": "http://localhost:4000/back", "purpose": "update" }
+```
+
+`purpose` is sent outright, so an engagement that is not active answers
+`409 onboarding_purpose_mismatch` instead of getting a first-time link, and
+one whose list is empty by now answers `409 requirements_complete`; either
+shows in the note under the button. The expected shape of the `201`:
+
+```json
+{
+  "session_id": "<new session id>",
+  "url": "https://new.abillio.dev/s/<token>",
+  "expires_at": "<24 hours on>",
+  "status": "awaiting_freelancer",
+  "purpose": "update",
+  "mode": "maintenance"
+}
+```
+
+The new `session_id` and `url` replace the stored ones on the same
+freelancer, so the status check, the poll and `engagement.onboarding.completed`
+follow the update link from then on; the engagement, `can_be_paid` and what is
+open stay as they were until Abillio says otherwise. `public/popup.js` opens
+the popup on the click, as for the join page, and points it at `url`, which
+goes only to the browser that pressed. Minting again while the link is still
+open hands back the same link, so the button stays usable for a freelancer
+who closed the window half way.
+
+An update link asks no consent again. The freelancer confirms a six-digit
+code Abillio mails to their Abillio login (for a sandbox freelancer the popup
+shows the code to enter), and you hear `engagement.onboarding.started` with
+`purpose: "update"`. The popup then walks only what the list names: identity
+again (the sandbox approves it at once), a bank account (in the sandbox a
+replacement verifies as it is saved), or the mandate, granted again.
+
+The back office follows the update link on its `state`, never on
+`can_be_paid`, since a freelancer can be payable while the link still has
+something to finish, as after **Mandate withdrawn**. After the press, and
+whenever the popup posts back, it asks `/join/status` every three seconds;
+the server reads the session and the engagement row and keeps what the row's
+`requirements` still list as open. Once the session reads `complete` the page
+loads itself again, and with nothing open and `can_be_paid` true step 2 is
+**Done**. The same happens with the page closed: each load of the back office
+makes that check while step 2 is open, the poll (no `PUBLIC_URL`) records
+`engagement.onboarding.completed` from the session's `state`, with the
+session's `purpose`, and the webhook delivers Abillio's own. Only an update
+link's completion closes what reopened: a first link's, delivered late, says
+nothing about it. A list Abillio could not work out (`requirements: null`)
+proves nothing and changes nothing.
+
+**What can go wrong.** A blocked popup: the note shows the link to open by
+hand. An update link nobody signs in through expires after 24 hours (the note
+says so while the page follows it), and **Send a new link** mints another. A
+freelancer whose Abillio sign-in asks for a second factor gets no code: the
+popup sends them to sign in to Abillio, and you may hear only
+`engagement.onboarding.completed`.
 
 ## Step 3 — Issue an invoice in the freelancer's name
 
@@ -1070,8 +1216,6 @@ does more around it. Invoices to your own clients rather than to yourself, and
 the hold Abillio may put on them while it checks the buyer, are in
 [invoicing as the intermediary](https://backend.abillio.dev/company-api/#intermediary).
 Hundreds of invoices in one request are [bulk issuing](https://backend.abillio.dev/company-api/#bulk).
-Sending an onboarded freelancer back to fix what their `requirements` list says
-is an update link, in [gateway onboarding](https://backend.abillio.dev/company-api/#gateway).
 Proposing the commission you keep on each invoice is in
 [commission](https://backend.abillio.dev/company-api/#commission). Contracts a
 freelancer must sign before you can be invoiced, and their `document.*` events,
@@ -1082,8 +1226,9 @@ start yourself, when your own client paid the invoice, are in
 Two simplifications are deliberate. `data/state.json` holds one walk, so the
 README stays readable; a real integration keys all of it (the freelancer, the
 invoices, the idempotency keys) by its own user and keeps it in its database.
-And the sandbox simulators stand in for the bank: in production the money is a
-real transfer and the payout's fate is the bank's, so the same events arrive on
+And the sandbox simulators stand in for the bank and for time: in production
+the money is a real transfer, the payout's fate is the bank's, and an identity
+lapses or a mandate is withdrawn when it happens, so the same events arrive on
 their own time. Before going live, read the guide's
 [checklist](https://backend.abillio.dev/company-api/#golive).
 

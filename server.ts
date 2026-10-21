@@ -90,8 +90,9 @@ export function createApp(deps: Deps): Hono {
   // hosted copy every visitor sees this page; the secret is what lets
   // someone forge a delivery, the key id is the credential's name, kept out
   // of sight like the rest of .env, and the link is the freelancer's to open
-  // (guide §9), spent on its first open, so whoever took it from here first
-  // would spend it. The account is the bound one, so the page gates its
+  // (guide §9) and to act on (a first link: they agree; an update link: the
+  // mailed code signs them in), so whoever took it from here first could act
+  // on it before them. The account is the bound one, so the page gates its
   // buttons as the guard does.
   const mask = (secret: string) => '…' + secret.slice(-4);
   const publicState = (s: State): State => {
