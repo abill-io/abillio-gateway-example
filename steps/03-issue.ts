@@ -1,10 +1,13 @@
 // Step 3 — one invoice in the freelancer's name, billed to the company
 // itself (the "self-client" Abillio provisions). Two calls, so a draft can be
 // reviewed before it becomes a document; each carries its own idempotency key.
+// Its line names the service it bills, one the freelancer's plan offers.
 import type { Api } from '../lib/abillio.ts';
-import { idempotencyKeyFor, type InvoiceRequest, type State } from '../lib/store.ts';
+import { idempotencyKeyFor, type InvoiceRequest, type ServiceItem, type State } from '../lib/store.ts';
+import { setupDone } from './02-onboard.ts';
 
-export type IssueForm = { description: string; unit_price: string; currency_code: string };
+// `service_slug` is absent, or empty, when the form offered no service.
+export type IssueForm = { service_slug?: string; description: string; unit_price: string; currency_code: string };
 export type InvoiceSummary = { id: string; number: string; status: string; public_url: string; total: string; currency: string };
 
 // Where the joined freelancer's invoice stands. It decides what the next press
@@ -17,6 +20,7 @@ export type InvoiceSummary = { id: string; number: string; status: string; publi
 export type IssueStage = 'idle' | 'pending' | 'draft' | 'issued';
 
 type ClientRow = { id: string; name: string; company_account_id: string | null };
+type ServiceRow = { slug: string; name: string; group: string };
 type InvoiceOut = { id: string; invoice_number: string; status: string; public_url: string; amounts: { total: { amount: string; currency: string } } };
 
 function summary(out: InvoiceOut): InvoiceSummary {
@@ -31,8 +35,10 @@ function isoDate(date: Date): string {
 // Dated here, once; a retry re-sends the stored request, never a fresh one.
 export function invoiceRequest(engagementId: string, form: IssueForm, today: Date): InvoiceRequest {
   const due = new Date(today.getTime() + 14 * 86_400_000);
+  const service = form.service_slug?.trim();
   return {
     engagement_id: engagementId,
+    ...(service ? { service_slug: service } : {}),
     description: form.description,
     unit_price: form.unit_price,
     currency_code: form.currency_code,
@@ -53,6 +59,31 @@ export function issueStage(state: State): IssueStage {
   return pendingRequest(state) ? 'pending' : 'idle';
 }
 
+// The services the freelancer's plan offers, which a line may bill in their
+// name: one list, not paged, in Abillio's order (by group), and empty when
+// the plan offers none. A slug the plan does not offer is refused at the
+// draft, with a 400.
+export async function listServices(api: Api, engagementId: string): Promise<ServiceItem[]> {
+  const rows = await api<ServiceRow[]>('GET', `/engagements/${encodeURIComponent(engagementId)}/services/`);
+  return rows.map(row => ({ slug: row.slug, name: row.name, group: row.group }));
+}
+
+// The list stored for the joined freelancer's engagement; null while none
+// has been read for it.
+export function storedServices(state: State): ServiceItem[] | null {
+  const services = state.services;
+  return services && services.engagement_id === state.freelancer?.engagement_id ? services.items : null;
+}
+
+// The engagement whose services the back office reads as it loads, if any:
+// the joined freelancer's, once they are ready to be paid (step 2 done, where
+// the walk turns to the invoice), while step 3 shows its form and nothing is
+// stored for it. So the list is read once per engagement, not on every load.
+export function servicesToRead(state: State): string | null {
+  const id = state.freelancer?.engagement_id;
+  return id && setupDone(state.freelancer) && issueStage(state) === 'idle' && !storedServices(state) ? id : null;
+}
+
 export async function findSelfClient(api: Api, accountId: string): Promise<{ id: string; name: string }> {
   // The list cannot be filtered to the self-client. 100 rows are plenty for
   // this sample; a company with more clients pages on with `offset`.
@@ -70,10 +101,12 @@ export async function draftInvoice(api: Api, state: State, request: InvoiceReque
     `/engagements/${encodeURIComponent(request.engagement_id)}/invoices/`,
     {
       client_uuid: selfClientId,
-      // `unit_code` is a UN/ECE Rec 20 code, which e-invoicing requires on
-      // every line: HUR (hour) for tutoring. Abillio accepts HUR, DAY, MON,
-      // C62, ZP and LS, and refuses anything else with a 422.
-      items: [{ description: request.description, quantity: '1', unit_price: request.unit_price, unit_code: 'HUR' }],
+      // `service_slug` is the service the line bills, from `listServices`; a
+      // request stored without one sends none. `unit_code` is a UN/ECE Rec 20
+      // code, which e-invoicing requires on every line: HUR (hour) for
+      // tutoring. Abillio accepts HUR, DAY, MON, C62, ZP and LS, and refuses
+      // anything else with a 422.
+      items: [{ ...(request.service_slug ? { service_slug: request.service_slug } : {}), description: request.description, quantity: '1', unit_price: request.unit_price, unit_code: 'HUR' }],
       currency_code: request.currency_code,
       issued_date: request.issued_date,
       due_date: request.due_date,

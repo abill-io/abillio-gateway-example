@@ -9,7 +9,7 @@ import type { Api } from '../lib/abillio.ts';
 export const NEEDED_ACTIONS = [
   'freelancers.invite',                  // POST /onboarding/sessions/ (step 2, and step 2b's update link)
   'freelancers.view',                    // GET /onboarding/sessions/{id} (step 2)
-  'engagements.view',                    // GET /engagements/?search=, the engagement lookup (step 2)
+  'engagements.view',                    // GET /engagements/?search=, the engagement lookup (step 2); GET /engagements/{id}/services/ (step 3)
   'clients.view',                        // GET /accounts/clients/, the self-client lookup (step 3)
   'invoices.draft.create',               // POST /engagements/{id}/invoices/ (step 3)
   'invoices.issue',                      // POST …/invoices/{id}/issue (step 3)

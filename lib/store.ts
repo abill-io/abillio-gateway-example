@@ -17,9 +17,11 @@ export type StoredEvent = {
 // What the partner asked Abillio to draft, dated once. It is stored before the
 // first draft call, and a retry re-sends exactly this: under a kept key a later
 // day or an edited form would make it a different request, which Abillio
-// refuses (409).
+// refuses (409). `service_slug` is the service the line bills (step 3's
+// Service), absent when the form offered none.
 export type InvoiceRequest = {
   engagement_id: string;
+  service_slug?: string;
   description: string;
   unit_price: string;
   currency_code: string;
@@ -40,6 +42,11 @@ export type RequirementItem = {
   due_at?: string | null;
   resource_id?: string | null;
 };
+
+// One service the freelancer's plan offers, as `GET /engagements/{id}/services/`
+// lists it, kept to what step 3 shows: the `slug` an invoice line sends as
+// `service_slug`, and Abillio's `name` and `group` for it.
+export type ServiceItem = { slug: string; name: string; group: string };
 
 // The engagement's `requirements`. `status` is the one word to branch on:
 // `complete`, `action_needed` (something due or ahead, nothing stopped) or
@@ -77,6 +84,13 @@ export type State = {
   } | null;
   invoice: { id: string; number: string; status: string; public_url: string } | null;
   invoice_request: InvoiceRequest | null;
+  // The services step 3 offers: what `GET /engagements/{id}/services/`
+  // answered for the engagement named here, read once, when the back office
+  // first shows step 3's form for a freelancer who is ready (server.ts). An
+  // empty list is an answer too (the plan offers none). A failed read stores
+  // nothing, so the next load reads again. Another engagement starts it
+  // over, as it does steps 3 and 4.
+  services: { engagement_id: string; items: ServiceItem[] } | null;
   payout: { id: string; status: string } | null;
   // Stored as soon as Abillio answers the channel POST, before the
   // subscription exists (subscription_id null until it does).
@@ -92,7 +106,7 @@ export type State = {
 const DEFAULT_FILE = process.env.STATE_FILE || join(process.cwd(), 'data', 'state.json');
 
 export function defaultState(): State {
-  return { account: null, freelancer: null, invoice: null, invoice_request: null, payout: null, webhook: null, webhook_request: null, idempotency: {}, events: [] };
+  return { account: null, freelancer: null, invoice: null, invoice_request: null, services: null, payout: null, webhook: null, webhook_request: null, idempotency: {}, events: [] };
 }
 
 export function loadState(file: string = DEFAULT_FILE): State {

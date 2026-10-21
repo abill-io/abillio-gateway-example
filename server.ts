@@ -16,11 +16,11 @@ import { dedupeKey, parseDelivery, verifySignature } from './lib/webhooks.ts';
 import { checkKey, type KeyReport } from './steps/01-key.ts';
 import { findEngagement, onboardingAction, onboardingBody, openRequirements, readSession, returnUrlFor, setupDone, startOnboarding, type JoinForm } from './steps/02-onboard.ts';
 import { REQUIREMENT_SIMULATIONS, simulateRequirement, simulateRequirementAction, startUpdate, updateLinkBody } from './steps/02b-requirements.ts';
-import { draftInvoice, findSelfClient, invoiceRequest, issueInvoice, pendingRequest } from './steps/03-issue.ts';
+import { draftInvoice, findSelfClient, invoiceRequest, issueInvoice, listServices, pendingRequest, servicesToRead } from './steps/03-issue.ts';
 import { DEFAULT_COMPANY, PAYOUT_OUTCOMES, findPayout, fundWallet, payAction, payInvoice, readInvoice, readPayout, simulateAction, simulatePayout } from './steps/04-pay.ts';
 import { WEBHOOK_ACTIONS, aboutThisWalk, connectWebhooks, pollForEvents, recordCompletion, recordPoll, sendTestDelivery, type PollResult } from './steps/05-events.ts';
 import { latestUpdate, type UpdateSummary } from './lib/updates.ts';
-import { companyPage } from './views/company.ts';
+import { companyPage, type CompanyPageInput } from './views/company.ts';
 import { joinPage } from './views/join.ts';
 import { page } from './views/layout.ts';
 
@@ -107,11 +107,12 @@ export function createApp(deps: Deps): Hono {
   };
 
   // `c.html` is typed `Response | Promise<Response>` (it also takes a
-  // Promise<string>); a route handler returns either.
-  const render = (c: { req: { path: string }; html: (s: string) => Response | Promise<Response> }, error: unknown = null) => {
+  // Promise<string>); a route handler returns either. `view` is what only
+  // this request knows (GET /: a read made on the way in that failed).
+  const render = (c: { req: { path: string }; html: (s: string) => Response | Promise<Response> }, error: unknown = null, view: Pick<CompanyPageInput, 'servicesFailed'> = {}) => {
     const actionSteps: Record<string, number> = { key: 1, onboard: 2, issue: 3, pay: 4, events: 5 };
     const actionStep = actionSteps[c.req.path.split('/')[2] ?? ''];
-    return c.html(companyPage({ state: publicState(deps.state.load()), trace: deps.trace.list(), key: lastKey, error, publicUrl: deps.publicUrl, focusStep: error ? actionStep : undefined, abillioOrigin: deps.abillioOrigin() }));
+    return c.html(companyPage({ state: publicState(deps.state.load()), trace: deps.trace.list(), key: lastKey, error, publicUrl: deps.publicUrl, focusStep: error ? actionStep : undefined, abillioOrigin: deps.abillioOrigin(), ...view }));
   };
 
   // One keyed call. The key is claimed in the store BEFORE the call, so an
@@ -235,8 +236,9 @@ export function createApp(deps: Deps): Hono {
       deps.state.update(s => {
         // Only for the session this check read: a newer join replaced it.
         if (!s.freelancer || s.freelancer.session_id !== f.session_id) return;
-        // Steps 3 and 4 belong to one engagement; another one starts them over.
-        if (learned.engagement_id && s.freelancer.engagement_id !== learned.engagement_id) { s.invoice = null; s.invoice_request = null; s.payout = null; }
+        // Steps 3 and 4 belong to one engagement, and so does the service
+        // list; another one starts them over (the next load reads its list).
+        if (learned.engagement_id && s.freelancer.engagement_id !== learned.engagement_id) { s.invoice = null; s.invoice_request = null; s.services = null; s.payout = null; }
         const { requirements, ...rest } = learned;
         Object.assign(s.freelancer, rest);
         // The list only over the one this check compared: a simulation
@@ -256,9 +258,13 @@ export function createApp(deps: Deps): Hono {
   // Abillio closes it), every load makes that status check too: the join
   // page's poll stores the answer only while the join page is open, and on a
   // public URL with no webhook connected nothing else would.
+  // Then, once the freelancer is ready, the services step 3 offers: read
+  // once for their engagement (servicesToRead) and stored with it, so later
+  // loads read nothing more; an empty list is kept like any other answer.
   // Only once the key is checked, as the page counts it (boundAccount). A
   // failed read does not fail the page: it renders what is stored, and the
-  // trace shows the refused call.
+  // trace shows the refused call. A failed service read stores nothing, so
+  // step 3 says why it offers no service, and the next load reads again.
   app.get('/', async c => {
     const s = deps.state.load();
     const f = s.freelancer;
@@ -269,7 +275,21 @@ export function createApp(deps: Deps): Hono {
         // Nothing learned; the page below is what is stored.
       }
     }
-    return render(c);
+    // After the status check, which may just have found the freelancer ready.
+    const current = deps.state.load();
+    const engagementId = servicesToRead(current);
+    let servicesFailed = false;
+    if (engagementId && boundAccount(current)) {
+      try {
+        const items = await listServices(deps.api, engagementId);
+        // Only onto the engagement it was read for: another freelancer may
+        // have been found while the read was out.
+        deps.state.update(next => { if (next.freelancer?.engagement_id === engagementId) next.services = { engagement_id: engagementId, items }; });
+      } catch {
+        servicesFailed = true;
+      }
+    }
+    return render(c, null, { servicesFailed });
   });
 
   app.post('/steps/key', async c => {
@@ -432,7 +452,7 @@ export function createApp(deps: Deps): Hono {
         // this engagement is re-sent as it is (the form is then ignored), even
         // one another press stored meanwhile, so the bytes under the key never
         // change with the day or the form.
-        const fresh = invoiceRequest(engagementId, { description: form.description ?? '', unit_price: form.unit_price ?? '', currency_code: form.currency_code || 'EUR' }, new Date(deps.now()));
+        const fresh = invoiceRequest(engagementId, { service_slug: form.service_slug, description: form.description ?? '', unit_price: form.unit_price ?? '', currency_code: form.currency_code || 'EUR' }, new Date(deps.now()));
         let here = false;
         const request = deps.state.update(s => {
           if (!onThisWalk(s)) return;

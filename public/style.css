@@ -705,6 +705,10 @@ select:disabled { color: var(--muted); background-color: var(--sunken); border-c
   gap: 12px;
   width: 100%;
 }
+/* Step 3's Service has a row of its own, as wide as the description below
+   it; on phones both take the whole row (.fields .wide). */
+.fields .service { grid-column: 1; }
+.fields .service + .wide { grid-column-start: 1; }
 .fund { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 10px 12px; }
 .fund label { width: 9.5rem; }
 .fund .unit { line-height: 46px; color: var(--ink-2); }

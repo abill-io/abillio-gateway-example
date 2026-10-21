@@ -1,9 +1,9 @@
-import type { RequirementItem, State } from '../lib/store.ts';
+import type { RequirementItem, ServiceItem, State } from '../lib/store.ts';
 import type { TraceEntry } from '../lib/trace.ts';
 import type { KeyReport } from '../steps/01-key.ts';
 import { setupDone, splitRequirements } from '../steps/02-onboard.ts';
 import { REQUIREMENT_SIMULATIONS, type RequirementSimulation } from '../steps/02b-requirements.ts';
-import { issueStage, pendingRequest } from '../steps/03-issue.ts';
+import { issueStage, pendingRequest, storedServices } from '../steps/03-issue.ts';
 import { DEFAULT_COMPANY, PAYOUT_OUTCOMES } from '../steps/04-pay.ts';
 import { CHANNEL_NAME, aboutThisWalk } from '../steps/05-events.ts';
 import { latestUpdate } from '../lib/updates.ts';
@@ -12,8 +12,9 @@ import { errorBox, jsonBlock, rail, stateTag, stepPanel, stepStatuses, tracePane
 
 // `abillioOrigin` is the origin of the stored onboarding link (server.ts's
 // deps.abillioOrigin), for step 2's update-link form: popup.js trusts a
-// message from there only.
-export type CompanyPageInput = { state: State; trace: TraceEntry[]; key: KeyReport | null; error: unknown; publicUrl: string | null; focusStep?: number; abillioOrigin?: string | null };
+// message from there only. `servicesFailed`: the read of step 3's services
+// that this load made failed.
+export type CompanyPageInput = { state: State; trace: TraceEntry[]; key: KeyReport | null; error: unknown; publicUrl: string | null; focusStep?: number; abillioOrigin?: string | null; servicesFailed?: boolean };
 
 function integrationDetails(body: string): string {
   return `<details class="integration-details"><summary>Integration details</summary>${body}</details>`;
@@ -127,20 +128,38 @@ export function onboardingPanel(state: State, publicUrl: string | null, status: 
   `, expanded);
 }
 
-function issueFields(values: { description: string; unit_price: string; currency_code: string }): string {
-  return `<label class="wide">Description <input name="description" value="${esc(values.description)}" required></label>
+// Step 3's Service, before the description: the services the freelancer's
+// plan offers, under Abillio's groups in Abillio's order. Nothing is marked
+// selected, so the first one is chosen until the company picks another. No
+// services, no field: the line then goes without one.
+function serviceField(services: ServiceItem[]): string {
+  if (!services.length) return '';
+  const groups: { label: string; items: ServiceItem[] }[] = [];
+  for (const item of services) {
+    const last = groups.at(-1);
+    if (last && last.label === item.group) last.items.push(item);
+    else groups.push({ label: item.group, items: [item] });
+  }
+  const options = (items: ServiceItem[]) => items.map(s => `<option value="${esc(s.slug)}">${esc(s.name)}</option>`).join('');
+  return `<label class="wide service">Service <select name="service_slug">${groups.map(g => (g.label ? `<optgroup label="${esc(g.label)}">${options(g.items)}</optgroup>` : options(g.items))).join('')}</select></label>`;
+}
+
+function issueFields(values: { description: string; unit_price: string; currency_code: string }, services: ServiceItem[] = []): string {
+  return `${serviceField(services)}<label class="wide">Description <input name="description" value="${esc(values.description)}" required></label>
       <label>Amount <input name="unit_price" class="amount" value="${esc(values.unit_price)}" required pattern="\\d+(\\.\\d{1,2})?"></label>
       <label>Currency <select name="currency_code"><option>${esc(values.currency_code)}</option></select></label>`;
 }
 
 // The panel offers exactly what the next press will do (`issueStage`): a
 // stored request or draft is never shown as a form that would be ignored.
-export function issuePanel(state: State, status: StepStatus = stepStatuses(state)[2], expanded?: boolean): string {
+// `servicesFailed`: this load's read of the services failed (server.ts).
+export function issuePanel(state: State, status: StepStatus = stepStatuses(state)[2], expanded?: boolean, servicesFailed = false): string {
   const ready = Boolean(state.freelancer?.engagement_id && state.account);
   const button = (label: string) => `<button${live(state, ready)}>${esc(label)}</button>`;
   const stage = issueStage(state);
   const inv = state.invoice;
   const request = pendingRequest(state);
+  const services = storedServices(state);
   let body: string;
   if (inv && stage === 'issued') {
     // Abillio's answer, but still checked before it becomes a link.
@@ -151,14 +170,26 @@ export function issuePanel(state: State, status: StepStatus = stepStatuses(state
     body = `<p class="facts">Draft <code>${esc(inv.id)}</code> is stored and will be issued as drafted.</p>
     <form method="post" action="/steps/issue">${button('Issue the draft')}</form>`;
   } else if (request && stage === 'pending') {
+    // The service the stored request goes out with, by its name when the
+    // stored list still has it.
+    const slug = request.service_slug;
+    const chosen = slug ? [{ slug, name: services?.find(s => s.slug === slug)?.name ?? slug, group: '' }] : [];
     body = `<form method="post" action="/steps/issue" class="issue-form">
-      <fieldset class="fields" disabled>${issueFields(request)}</fieldset>
+      <fieldset class="fields" disabled>${issueFields(request, chosen)}</fieldset>
       <p class="muted">The last attempt's outcome is unknown (no answer, a server error, or Abillio still holds it); pressing again re-sends the same request under the same key.</p>
       ${button('Retry')}
     </form>`;
   } else {
+    // Why there is no Service to choose, once the list was asked for. Before
+    // that (the freelancer is not ready yet) the form is as it always was.
+    const without = services && !services.length
+      ? '<p class="muted">Abillio lists no services for this freelancer’s plan, so the invoice line goes without one.</p>'
+      : !services && servicesFailed
+        ? '<p class="muted">The freelancer’s services could not be read, so the invoice line goes without one. Reload the page to try again.</p>'
+        : '';
     body = `<form method="post" action="/steps/issue" class="issue-form">
-      <div class="fields">${issueFields({ description: 'Services, October', unit_price: '100.00', currency_code: 'EUR' })}</div>
+      <div class="fields">${issueFields({ description: 'Services, October', unit_price: '100.00', currency_code: 'EUR' }, services ?? [])}</div>
+      ${without}
       ${button('Draft and issue')}
     </form>`;
   }
@@ -167,7 +198,7 @@ export function issuePanel(state: State, status: StepStatus = stepStatuses(state
     <p class="step-copy">Your company creates an invoice in the freelancer’s name for the work you are paying them for.</p>
     ${body}
     ${ready ? '' : '<p class="muted">Needs a joined freelancer (step 2) and the key check (step 1).</p>'}
-    ${integrationDetails('<p><code>GET /accounts/clients/</code> finds the self-client (the company itself), <code>POST /engagements/{id}/invoices/</code> drafts, <code>POST …/issue</code> issues. A 409 here lists every blocker at once.</p>')}
+    ${integrationDetails('<p><code>GET /engagements/{id}/services/</code> lists the services the freelancer’s plan offers, read once they are ready to be paid; the chosen one’s <code>slug</code> goes on the line as <code>service_slug</code>. <code>GET /accounts/clients/</code> finds the self-client (the company itself), <code>POST /engagements/{id}/invoices/</code> drafts, <code>POST …/issue</code> issues. A 409 here lists every blocker at once.</p>')}
   `, expanded);
 }
 
@@ -279,7 +310,7 @@ export function companyPage(input: CompanyPageInput): string {
   const panels = [
     keyPanel(input.key, input.state, steps[0], focus === 0),
     onboardingPanel(input.state, input.publicUrl, steps[1], focus === 1, input.abillioOrigin ?? null),
-    issuePanel(input.state, steps[2], focus === 2),
+    issuePanel(input.state, steps[2], focus === 2, input.servicesFailed ?? false),
     payPanel(input.state, steps[3], focus === 3),
     eventsPanel(input.state, input.publicUrl, steps[4], focus === 4),
   ];

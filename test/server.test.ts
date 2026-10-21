@@ -293,9 +293,20 @@ function notYetPayable(): State {
 const SESSION_READ = 'GET /onboarding/sessions/s1';
 const ENGAGEMENT_READ = 'GET /engagements/?search=anna%40example.com';
 
+// Step 3's service list for e1: what GET /engagements/e1/services/ answers,
+// the plan's catalog in Abillio's order (by group), and what the sample keeps
+// of it. The names are Abillio's own text, so the page escapes them.
+const SERVICES_READ = 'GET /engagements/e1/services/';
+const SERVICES = [
+  { slug: 'educational-subjects', name: 'Educational subjects', group: 'Learning and development', vat_mode: '', default_unit_code: '', supports_royalties: false },
+  { slug: 'language-lessons', name: 'Language lessons', group: 'Learning and development', vat_mode: '', default_unit_code: '', supports_royalties: false },
+  { slug: 'music-lessons', name: 'Music & singing lessons', group: 'Music & performing arts', vat_mode: '', default_unit_code: '', supports_royalties: false },
+];
+const STORED_SERVICES = SERVICES.map(({ slug, name, group }) => ({ slug, name, group }));
+
 // Abillio's two status reads about Anna, recorded: the session answers
-// `answer` (an Error fails the read), the engagement is e1, `active`.
-// `meanwhile` runs while the session read is out.
+// `answer` (an Error fails the read), the engagement is e1, `active`, and
+// its services are SERVICES. `meanwhile` runs while the session read is out.
 function statusApi(answer: { can_be_paid: boolean } | Error, meanwhile: () => void = () => {}) {
   const calls: string[] = [];
   const api = (async (method: string, path: string) => {
@@ -307,6 +318,7 @@ function statusApi(answer: { can_be_paid: boolean } | Error, meanwhile: () => vo
       return { state: answer.can_be_paid ? 'complete' : 'in_progress', can_be_paid: answer.can_be_paid, purpose: 'onboarding', requirements: [] };
     }
     if (call === ENGAGEMENT_READ) return { count: 1, items: [{ id: 'e1', status: 'active', counterparty: { email: 'anna@example.com', servicing_company: { slug: 'abillio-ks' } }, compliance: { can_be_paid: !(answer instanceof Error) && answer.can_be_paid } }] };
+    if (call === SERVICES_READ) return SERVICES;
     throw new Error(`unexpected ${call}`);
   }) as Api;
   return { api, calls };
@@ -320,8 +332,8 @@ test('opening the back office asks Abillio about a freelancer it cannot pay yet:
   const abillio = statusApi({ can_be_paid: true });
   const { app, state } = appWith(abillio.api, fileLikeState(notYetPayable()), 'https://x');
   const html = await (await app.request('/')).text();
-  assert.deepEqual(abillio.calls, [SESSION_READ, ENGAGEMENT_READ], 'the two reads a status check makes, once each');
-  assert.deepEqual(state.load(), joinedState(), 'what a status check stores: the freelancer can be paid');
+  assert.deepEqual(abillio.calls, [SESSION_READ, ENGAGEMENT_READ, SERVICES_READ], 'the two reads a status check makes, once each, then the services step 3 offers, now that the freelancer is ready');
+  assert.deepEqual(state.load(), { ...joinedState(), services: { engagement_id: 'e1', items: STORED_SERVICES } }, 'what a status check stores: the freelancer can be paid');
   assert.ok(html.includes('2 of 5 steps done'));
   assert.equal(step2Status(html), 'Done');
 });
@@ -348,11 +360,14 @@ test('a load whose reads change nothing renders the page as stored and stores no
   }
 });
 
-test('the back office reads nothing on load unless a freelancer Abillio cannot pay yet is stored and the key is checked', async () => {
+test("the back office reads nothing on load unless the key is checked and a freelancer Abillio cannot pay yet is stored, or step 3's form has no service list for one it can", async () => {
   const cases: [string, State][] = [
     ['nobody has joined', sandboxState()],
-    ['the freelancer can be paid', joinedState()],
+    ['the freelancer can be paid and their services are stored', { ...joinedState(), services: { engagement_id: 'e1', items: STORED_SERVICES } }],
+    // Past the form there is nothing left to choose.
+    ['the freelancer can be paid and a draft is stored', { ...joinedState(), invoice: { id: 'inv-1', number: '', status: 'draft', public_url: '' } }],
     ['the key is not checked', { ...notYetPayable(), account: null }],
+    ['the key is not checked and the freelancer can be paid', { ...joinedState(), account: null }],
     // A check stored under another key reads as none, on the page too.
     ['the key was checked under another key id', { ...notYetPayable(), account: { ...sandboxState().account!, key_id: 'key_0' } }],
   ];
@@ -495,10 +510,12 @@ test('a refused update link comes back as text for the note under the button and
 });
 
 test('while what a simulation reopened is open, each load follows the engagement: what is still open stays, a list that reads complete makes step 2 done again (a freelancer Abillio could pay all along included), and neither a list Abillio could not work out nor a first onboarding is followed', async () => {
-  // A withdrawn mandate, and the update link already minted (s2).
+  // A withdrawn mandate, and the update link already minted (s2). Step 3's
+  // services were read while the freelancer was ready, before it reopened.
   const update = (): State => {
     const s = reopenedState('mandate');
     s.freelancer = { ...s.freelancer!, session_id: 's2' };
+    s.services = { engagement_id: 'e1', items: STORED_SERVICES };
     return s;
   };
   const complete: Requirements = { status: 'complete', due: [], upcoming: [] };
@@ -697,10 +714,11 @@ function reopenedState(kind: 'identity_verification' | 'payout_method' | 'mandat
 
 const kycMissing = () => new AbillioError(409, { error: { code: 'kyc_missing', message: 'Identity not verified', blockers: [{ code: 'kyc_missing', message: 'Identity not verified', capability: 'send_invoice' }] } }, '');
 
-// Abillio as the issue route meets it, idempotency included: a draft key it
-// has seen answers with that draft again, a new key drafts another invoice;
-// an issue answers `pending`, as staging does for a self-client invoice.
-// `answer` may take over any call first (throw to fail it).
+// Abillio as step 3 meets it, idempotency included: the services e1's plan
+// offers (SERVICES, which the page reads); a draft key it has seen answers
+// with that draft again, a new key drafts another invoice; an issue answers
+// `pending`, as staging does for a self-client invoice. `answer` may take
+// over any call first (throw to fail it).
 function fakeIssueApi(answer: (call: Call) => unknown = () => undefined) {
   const calls: Call[] = [];
   const draftForKey = new Map<string, string>();
@@ -711,6 +729,7 @@ function fakeIssueApi(answer: (call: Call) => unknown = () => undefined) {
     const taken = await answer(call);
     if (taken !== undefined) return taken;
     if (method === 'GET' && path === '/accounts/clients/?limit=100') return { count: 1, items: [{ id: 'c-self', name: 'Acme', company_account_id: 'a1' }] };
+    if (`${method} ${path}` === SERVICES_READ) return SERVICES;
     if (method === 'POST' && path === '/engagements/e1/invoices/') {
       if (!draftForKey.has(call.key)) draftForKey.set(call.key, `inv-${draftForKey.size + 1}`);
       return out(draftForKey.get(call.key)!, 'draft');
@@ -747,11 +766,12 @@ test('re-joining with the same e-mail keeps steps 3 and 4; a different engagemen
   initial.invoice = { id: 'inv-1', number: 'INV-1', status: 'pending', public_url: 'https://new.abillio.dev/invoice/inv-1' };
   initial.invoice_request = { engagement_id: 'e1', description: 'Tutoring, October', unit_price: '100.00', currency_code: 'EUR', issued_date: '2026-10-19', due_date: '2026-11-02' };
   initial.payout = { id: 'p1', status: 'pending' };
+  initial.services = { engagement_id: 'e1', items: STORED_SERVICES };
   // What a simulation reopened on e1 (step 2b) goes with the engagement.
   initial.freelancer!.requirements = reopenedList('mandate');
   const { app, state } = appWith(api, fileLikeState(initial));
   const join = (email: string) => app.request('/join', { method: 'POST', body: new URLSearchParams({ first_name: 'Anna', last_name: 'Ozola', email, tax_country: 'LV', locale: 'lv' }), headers: { 'content-type': 'application/x-www-form-urlencoded' } });
-  const steps34 = () => { const s = state.load(); return { invoice: s.invoice, invoice_request: s.invoice_request, payout: s.payout }; };
+  const steps34 = () => { const s = state.load(); return { invoice: s.invoice, invoice_request: s.invoice_request, payout: s.payout, services: s.services }; };
   const before = steps34();
   assert.equal((await join('Anna@Example.com')).status, 200);
   await app.request('/join/status');
@@ -762,7 +782,7 @@ test('re-joining with the same e-mail keeps steps 3 and 4; a different engagemen
   assert.equal((await join('ben@example.com')).status, 200);
   await app.request('/join/status');
   assert.equal(state.load().freelancer?.engagement_id, 'e2');
-  assert.deepEqual(steps34(), { invoice: null, invoice_request: null, payout: null }, 'another engagement starts steps 3 and 4 over');
+  assert.deepEqual(steps34(), { invoice: null, invoice_request: null, payout: null, services: null }, 'another engagement starts steps 3 and 4 over, its service list with them');
   assert.equal(state.load().freelancer?.requirements, null, 'another freelancer starts with nothing reopened');
 });
 
@@ -796,6 +816,50 @@ test('POST /steps/issue drafts and issues in one go and shows a 409 as blockers'
   assert.ok(html.includes('<ul class="blockers"><li><span class="blocker-message">Identity not verified</span><span class="blocker-meta"><code>kyc_missing</code> <small>(send_invoice)</small></span></li></ul>'), 'every blocker shows its message, diagnostic code and capability');
   assert.equal(state.load().invoice?.status, 'draft', 'the draft is kept so a retry only issues');
   assert.equal(abillio.issues().length, 1);
+});
+
+// The issue form's items, as the draft call sent them.
+const draftedItems = (abillio: ReturnType<typeof fakeIssueApi>) => (abillio.drafts()[0]?.body as { items: unknown[] } | undefined)?.items;
+const servicesReads = (abillio: ReturnType<typeof fakeIssueApi>) => abillio.calls.filter(c => `${c.method} ${c.path}` === SERVICES_READ).length;
+
+test("once the freelancer can be paid, the back office reads the services their plan offers, once, and step 3 offers them before the description, grouped as Abillio lists them, the first one chosen; the press sends the chosen one's slug on the line", async () => {
+  const abillio = fakeIssueApi();
+  const { app, state } = appWith(abillio.api, fileLikeState(joinedState()));
+  const html = await (await app.request('/')).text();
+  await app.request('/');
+  assert.equal(servicesReads(abillio), 1, 'read once, then served from what is stored');
+  assert.deepEqual(state.load().services, { engagement_id: 'e1', items: STORED_SERVICES });
+  // A select with nothing marked selected starts on its first option.
+  assert.ok(html.includes('<div class="fields"><label class="wide service">Service <select name="service_slug"><optgroup label="Learning and development"><option value="educational-subjects">Educational subjects</option><option value="language-lessons">Language lessons</option></optgroup><optgroup label="Music &amp; performing arts"><option value="music-lessons">Music &amp; singing lessons</option></optgroup></select></label><label class="wide">Description'));
+  await pressIssue(app, { service_slug: 'language-lessons', description: 'Tutoring, October', unit_price: '100.00', currency_code: 'EUR' });
+  assert.deepEqual(draftedItems(abillio), [{ service_slug: 'language-lessons', description: 'Tutoring, October', quantity: '1', unit_price: '100.00', unit_code: 'HUR' }]);
+  assert.equal(state.load().invoice_request?.service_slug, 'language-lessons', 'stored with the request, so a retry re-sends it');
+});
+
+test('with no service to choose, step 3 has no select and says why in a muted line, and the line goes without a service: the plan offers none, which is kept, or the read failed, which the next load tries again', async () => {
+  const cases: { label: string; answer: () => unknown; line: string; stored: State['services']; reads: number }[] = [
+    { label: 'the plan offers none', answer: () => [], line: '<p class="muted">Abillio lists no services for this freelancer’s plan, so the invoice line goes without one.</p>', stored: { engagement_id: 'e1', items: [] }, reads: 1 },
+    {
+      label: 'the read fails',
+      answer: () => { throw new AbillioError(404, { error: { code: 'not_found', message: 'Engagement not found.' } }, ''); },
+      line: '<p class="muted">The freelancer’s services could not be read, so the invoice line goes without one. Reload the page to try again.</p>',
+      stored: null,
+      reads: 2,
+    },
+  ];
+  for (const { label, answer, line, stored, reads } of cases) {
+    const abillio = fakeIssueApi(call => (`${call.method} ${call.path}` === SERVICES_READ ? answer() : undefined));
+    const { app, state } = appWith(abillio.api, fileLikeState(joinedState()));
+    const html = await (await app.request('/')).text();
+    assert.ok(!html.includes('name="service_slug"'), `${label}: no select`);
+    assert.ok(html.includes(line), `${label}: the muted line says why`);
+    assert.ok(!html.includes('role="alert"'), `${label}: the page itself did not fail`);
+    assert.deepEqual(state.load().services, stored, label);
+    await app.request('/');
+    assert.equal(servicesReads(abillio), reads, label);
+    await pressIssue(app);
+    assert.deepEqual(draftedItems(abillio), [{ description: 'Tutoring, October', quantity: '1', unit_price: '100.00', unit_code: 'HUR' }], `${label}: no service_slug on the line`);
+  }
 });
 
 test('one draft per engagement: after a 409 the next press issues the stored draft, and a press after issuing repeats only the issue call', async () => {

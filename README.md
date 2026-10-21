@@ -35,8 +35,9 @@ account setup in a separate window.
 2. In step 2, choose **Register & connect with Abillio**. On `/join`, keep the
    suggested test details and press **Continue with Abillio**. Complete the
    setup in the Abillio window, then use **Back to company view**.
-3. Once the freelancer is ready, step 3 opens with the description, amount and
-   currency fields. **Draft and issue** creates and issues the invoice.
+3. Once the freelancer is ready, step 3 opens with the service, description,
+   amount and currency fields. **Draft and issue** creates and issues the
+   invoice.
 4. In step 4, **Add test funds to the wallet** reveals the sandbox deposit
    controls. Pay the invoice; if a payout is created, **Test payout outcomes**
    reveals the optional bank-response simulators.
@@ -776,14 +777,37 @@ filtered to it, so `GET /accounts/clients/?limit=100` and keep the row whose
 }
 ```
 
-Then the draft, `POST /engagements/{engagement_id}/invoices/` under
+Then the services the line may bill:
+`GET /engagements/{engagement_id}/services/` lists what the freelancer's plan
+offers, as one array (not paged) in Abillio's order, by `group`. The back
+office reads it once, on the first load that shows step 3's form for a
+freelancer who is ready to be paid, and stores it as `services` with the
+engagement's id, so later loads read nothing more; another engagement starts it
+over. Abridged to the fields the sample reads:
+
+```json
+[
+  { "slug": "educational-subjects", "name": "Educational subjects", "group": "Learning and development" },
+  { "slug": "language-lessons", "name": "Language lessons", "group": "Learning and development" }
+]
+```
+
+Step 3's **Service** offers them under their groups (a plan can offer a few
+hundred), the first one chosen, and the line sends the chosen item's `slug` as
+`service_slug`. Each item also says its `vat_mode` (one invoice
+cannot mix services whose `vat_mode` differs; one line never does) and a
+`default_unit_code`. An empty list is an answer too, and is kept. A read that
+fails stores nothing, and the next load reads again. Either way there is no
+select, a muted line says why, and the line goes without a service.
+
+Next the draft, `POST /engagements/{engagement_id}/invoices/` under
 `draft:<engagement>`. The request is dated once and stored in `invoice_request`
-before the first call, so a retry sends exactly this:
+before the first call, so a retry sends exactly this, the service included:
 
 ```json
 {
   "client_uuid": "01a100d8-b5d2-…",
-  "items": [{ "description": "Services, October", "quantity": "1", "unit_price": "100.00", "unit_code": "HUR" }],
+  "items": [{ "service_slug": "educational-subjects", "description": "Services, October", "quantity": "1", "unit_price": "100.00", "unit_code": "HUR" }],
   "currency_code": "EUR",
   "issued_date": "2026-10-19",
   "due_date": "2026-11-02",
@@ -791,8 +815,9 @@ before the first call, so a retry sends exactly this:
 }
 ```
 
-`unit_code` is a UN/ECE Rec 20 code, which e-invoicing requires on every line.
-The answer is a `201` draft, abridged:
+`service_slug` is left out when step 3 offered no service. `unit_code` is a
+UN/ECE Rec 20 code, which e-invoicing requires on every line. The answer is a
+`201` draft, abridged:
 
 ```json
 {
@@ -833,7 +858,8 @@ freelancer (`kyc_missing`, `invoicing_blocked`) and the invoice
 (`payout_method_missing`, `documents_unsigned`, …). The page shows them as a
 checklist; nothing was written, so fix them and press again, and the stored
 draft is issued. Do not pre-check: the issue call decides when it runs. A 422
-names a field (an unknown `unit_code`, a malformed amount). After a 5xx on the
+names a field (an unknown `unit_code`, a malformed amount), and a 400 on the
+draft a `service_slug` the freelancer's plan does not offer. After a 5xx on the
 issue call, read the invoice back instead of retrying (see
 [Idempotency](#idempotency-the-one-rule-every-step-follows)). "No self-client"
 means the company account is not verified yet.
