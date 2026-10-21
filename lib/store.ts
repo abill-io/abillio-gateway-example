@@ -27,18 +27,40 @@ export type InvoiceRequest = {
   due_date: string;
 };
 
+// One thing the freelancer still has to provide, as the engagement's
+// `requirements` lists it (`GET /engagements/{id}`, the requirement
+// simulator's answer). `kind` is an open list; `detail` is a word for a human,
+// never branched on; `detail`, `due_at` and `resource_id` are optional in the
+// schema.
+export type RequirementItem = {
+  kind: string;
+  state: 'due' | 'upcoming';
+  blocks: string[];
+  detail?: string;
+  due_at?: string | null;
+  resource_id?: string | null;
+};
+
+// The engagement's `requirements`. `status` is the one word to branch on:
+// `complete`, `action_needed` (something due or ahead, nothing stopped) or
+// `blocked` (something due that stops invoicing or payouts).
+export type Requirements = { status: 'complete' | 'action_needed' | 'blocked'; due: RequirementItem[]; upcoming: RequirementItem[] };
+
 export type State = {
   // From the key check. `is_sandbox` is what every route that writes to
   // Abillio asks before it does (server.ts); `key_id` and `env_account` are
   // the key and the ABILLIO_ACCOUNT the check was made with, since the answer
   // is about them: with either changed in .env, it no longer counts.
   account: { id: string; name: string; slug: string; is_sandbox: boolean; key_id: string; env_account: string } | null;
-  // What Abillio said about the freelancer. The engagement is known from the
-  // moment the link is opened, before the freelancer has consented to
-  // anything, so its id alone says nothing about step 2: `can_be_paid` (the
-  // stored session's answer, or its completion event) is what does.
+  // What Abillio said about the freelancer. The engagement is known from when
+  // they agree on the consent screen, long before they can be paid, so its id
+  // alone says nothing about step 2: `can_be_paid` (the stored session's
+  // answer, or its completion event) and `requirements` are what do.
   // `engagement_status` is the engagement row's status as last read (null
   // until a read, or once a completion has made the last one stale).
+  // `requirements` is what a step 2b simulation reopened, as the engagement
+  // lists it while something is open; null when nothing is, and always during
+  // a first onboarding, which goes by `can_be_paid` alone.
   freelancer: {
     email: string;
     session_id: string;
@@ -47,6 +69,7 @@ export type State = {
     engagement_status: string | null;
     can_be_paid: boolean;
     servicing_company_slug: string | null;
+    requirements: Requirements | null;
   } | null;
   invoice: { id: string; number: string; status: string; public_url: string } | null;
   invoice_request: InvoiceRequest | null;
@@ -78,9 +101,10 @@ export function loadState(file: string = DEFAULT_FILE): State {
     throw new Error(`${file}: state.json is not valid JSON — fix it or delete it to start over.`);
   }
   // A freelancer stored before step 2 kept what Abillio said (0.1.2 and
-  // earlier) reads as one it has said nothing about yet.
+  // earlier) reads as one it has said nothing about yet, and one stored before
+  // step 2b (0.1.6 and earlier) as one with nothing reopened.
   const f = state.freelancer;
-  if (f) state.freelancer = { ...f, engagement_status: f.engagement_status ?? null, can_be_paid: f.can_be_paid ?? false };
+  if (f) state.freelancer = { ...f, engagement_status: f.engagement_status ?? null, can_be_paid: f.can_be_paid ?? false, requirements: f.requirements ?? null };
   return state;
 }
 

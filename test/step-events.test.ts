@@ -44,7 +44,7 @@ test('connectWebhooks creates a channel with a 64-hex secret and a subscription;
 
 test('pollForEvents reports what changed since the stored state, named like the real events', async () => {
   const state = defaultState();
-  state.freelancer = { email: 'anna@example.com', session_id: 's1', session_url: 'https://new.abillio.dev/s/t', engagement_id: 'e1', engagement_status: 'invited', can_be_paid: false, servicing_company_slug: 'abillio-ks' };
+  state.freelancer = { email: 'anna@example.com', session_id: 's1', session_url: 'https://new.abillio.dev/s/t', engagement_id: 'e1', engagement_status: 'invited', can_be_paid: false, servicing_company_slug: 'abillio-ks', requirements: null };
   state.invoice = { id: 'inv-1', number: 'A-1', status: 'approved', public_url: 'u' };
   state.payout = { id: 'p1', status: 'pending' };
   const api = (async (_m: string, path: string) => {
@@ -70,7 +70,7 @@ test('pollForEvents reports what changed since the stored state, named like the 
 // otherwise for a path.
 function polled(answers: Record<string, () => unknown> = {}) {
   const state = defaultState();
-  state.freelancer = { email: 'anna@example.com', session_id: 's1', session_url: 'https://new.abillio.dev/s/t', engagement_id: 'e1', engagement_status: 'active', can_be_paid: true, servicing_company_slug: 'abillio-ks' };
+  state.freelancer = { email: 'anna@example.com', session_id: 's1', session_url: 'https://new.abillio.dev/s/t', engagement_id: 'e1', engagement_status: 'active', can_be_paid: true, servicing_company_slug: 'abillio-ks', requirements: null };
   state.invoice = { id: 'inv-1', number: 'A-1', status: 'approved', public_url: 'u' };
   state.payout = { id: 'p1', status: 'pending' };
   const reads: Record<string, () => unknown> = {

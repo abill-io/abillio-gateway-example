@@ -281,12 +281,13 @@ export function createApp(deps: Deps): Hono {
       // derives the same action and sends that key.
       const session = await keyed(state, onboardingAction(onboardingBody(join, returnUrl)), () => startOnboarding(deps.api, state, join, returnUrl), { once: true });
       // The same freelancer (the same address) keeps their engagement, and with
-      // it steps 3 and 4. Another one's engagement is looked up by /join/status,
-      // which starts those steps over once it finds a different one. Whether
-      // the freelancer can be paid is the new session's to say.
+      // it steps 3 and 4 and whatever a simulation reopened on it (step 2b),
+      // which only Abillio closes. Another one's engagement is looked up by
+      // /join/status, which starts those steps over once it finds a different
+      // one. Whether the freelancer can be paid is the new session's to say.
       deps.state.update(s => {
         const previous = s.freelancer?.email.toLowerCase() === form.email.toLowerCase() ? s.freelancer : null;
-        s.freelancer = { email: form.email, session_id: session.session_id, session_url: session.url, engagement_id: previous?.engagement_id ?? null, engagement_status: previous?.engagement_status ?? null, can_be_paid: false, servicing_company_slug: previous?.servicing_company_slug ?? null };
+        s.freelancer = { email: form.email, session_id: session.session_id, session_url: session.url, engagement_id: previous?.engagement_id ?? null, engagement_status: previous?.engagement_status ?? null, can_be_paid: false, servicing_company_slug: previous?.servicing_company_slug ?? null, requirements: previous?.requirements ?? null };
       });
       return c.json(session);
     } catch (err) {

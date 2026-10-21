@@ -1,6 +1,7 @@
 import type { State } from '../lib/store.ts';
 import type { TraceEntry } from '../lib/trace.ts';
 import { AbillioError } from '../lib/abillio.ts';
+import { setupDone } from '../steps/02-onboard.ts';
 import { issueStage } from '../steps/03-issue.ts';
 import { aboutThisWalk } from '../steps/05-events.ts';
 import { esc } from './layout.ts';
@@ -8,19 +9,21 @@ import { esc } from './layout.ts';
 export type StepStatus = 'done' | 'active' | 'current' | 'upcoming';
 
 // Where the walk stands, read off the stored state: the key check stored the
-// account (1), Abillio says the freelancer can be paid (2), the invoice is past
-// its draft (3) and paid (4), and Abillio has told us something about this
-// walk, by webhook or poll (5): what a reset sends about its demo freelancers,
-// or a test delivery, does not count. Step 2 is under way from the join until
-// then, since the engagement exists as soon as the link is opened, before any
-// consent. The first step neither done nor under way is the current one: while
-// the freelancer onboards, step 3 is up next (a 409 there lists what they
-// still owe). A later step can be done before an earlier one (events come in
-// while the freelancer onboards).
+// account (1), Abillio says the freelancer can be paid and nothing a
+// simulation reopened is open (2, `setupDone`), the invoice is past its draft
+// (3) and paid (4), and Abillio has told us something about this walk, by
+// webhook or poll (5): what a reset sends about its demo freelancers, or a
+// test delivery, does not count. Step 2 is under way from the join until
+// then, since the engagement is known from when they agree, long before they
+// can be paid, and again while a reopened requirement is open (step 2b). The
+// first step neither done nor under way is the current one: while the
+// freelancer onboards, step 3 is up next (a 409 there lists what they still
+// owe). A later step can be done before an earlier one (events come in while
+// the freelancer onboards).
 export function stepStatuses(state: State): StepStatus[] {
   const done = [
     Boolean(state.account),
-    state.freelancer?.can_be_paid === true,
+    setupDone(state.freelancer),
     issueStage(state) === 'issued',
     state.invoice?.status === 'paid',
     state.events.some(e => aboutThisWalk(state, e)),

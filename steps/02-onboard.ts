@@ -62,3 +62,10 @@ export async function findEngagement(api: Api, email: string) {
   if (!row) return null;
   return { id: row.id, status: row.status, can_be_paid: row.compliance.can_be_paid, servicing_company_slug: row.counterparty.servicing_company?.slug ?? null };
 }
+
+// Step 2 is done once Abillio says the freelancer can be paid and nothing a
+// simulation reopened (step 2b) is still open. `can_be_paid` alone is not
+// enough: it is about payouts, and a withdrawn mandate stops invoicing only.
+export function setupDone(f: State['freelancer']): boolean {
+  return f !== null && f.can_be_paid && !f.requirements;
+}

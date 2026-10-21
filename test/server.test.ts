@@ -4,7 +4,7 @@ import { createHmac } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { createApp } from '../server.ts';
 import { Trace } from '../lib/trace.ts';
-import { defaultState, type State } from '../lib/store.ts';
+import { defaultState, type Requirements, type State } from '../lib/store.ts';
 import { AbillioError, type Api } from '../lib/abillio.ts';
 import { TEST_ENV, fileLikeState, memoryState, sandboxState } from './helpers.ts';
 
@@ -36,7 +36,7 @@ test('the progress line and the rail read where the walk stands off the stored s
   // Joined, and Abillio says the freelancer can be paid.
   const joined = (): State => {
     const s = sandboxState();
-    s.freelancer = { email: 'anna@example.com', session_id: 's1', session_url: 'https://new.abillio.dev/s/tok', engagement_id: 'e1', engagement_status: 'active', can_be_paid: true, servicing_company_slug: 'abillio-ks' };
+    s.freelancer = { email: 'anna@example.com', session_id: 's1', session_url: 'https://new.abillio.dev/s/tok', engagement_id: 'e1', engagement_status: 'active', can_be_paid: true, servicing_company_slug: 'abillio-ks', requirements: null };
     return s;
   };
   // The link was opened, so Abillio knows the engagement, but the freelancer
@@ -59,6 +59,9 @@ test('the progress line and the rail read where the walk stands off the stored s
       facts: 'engagement <code>e1</code> <code class="state is-neutral">invited</code>, can_be_paid <code>false</code>,',
     },
     { label: 'once Abillio says the freelancer can be paid, step 2 is done', state: joined(), done: 2, current: 3, step2: 'Done', facts: 'engagement <code>e1</code> <code class="state is-ok">active</code>, can_be_paid <code>true</code>,' },
+    // A withdrawn mandate stops invoicing, not payouts: Abillio can still pay
+    // them, and step 2 is under way again all the same (step 2b).
+    { label: 'a requirement reopened after setup is a step under way again, though Abillio can still pay them', state: reopenedState('mandate'), done: 1, current: 3, step2: 'In progress', expanded: 2 },
     { label: 'a draft is not an issued invoice', state: Object.assign(joined(), { invoice: invoice('draft') }), done: 2, current: 3, step2: 'Done' },
     { label: 'an event heard before the invoice leaves the current step where it is', state: Object.assign(joined(), { events: [event] }), done: 3, current: 3, step2: 'Done' },
     { label: 'paid, and heard from Abillio: the walk is done', state: Object.assign(joined(), { invoice: invoice('paid'), events: [event] }), done: 5, current: null, step2: 'Done' },
@@ -140,7 +143,7 @@ test("GET /api/state returns the stored state as JSON, without the webhook secre
   withSecret.account = sandboxState().account;
   // The link is the freelancer's bearer credential, spent on its first open (guide §9).
   const token = 't'.repeat(40) + 'wxyz';
-  withSecret.freelancer = { email: 'anna@example.com', session_id: 's1', session_url: `https://new.abillio.dev/s/${token}`, engagement_id: null, engagement_status: null, can_be_paid: false, servicing_company_slug: null };
+  withSecret.freelancer = { email: 'anna@example.com', session_id: 's1', session_url: `https://new.abillio.dev/s/${token}`, engagement_id: null, engagement_status: null, can_be_paid: false, servicing_company_slug: null, requirements: null };
   const { app: app2 } = appWith((async () => ({})) as Api, memoryState(withSecret));
   const body = await (await app2.request('/api/state')).text();
   assert.ok(!body.includes('a'.repeat(60)), 'the secret never leaves the server');
@@ -257,7 +260,7 @@ test('the /join key follows the exact body: a changed form never goes out under 
 
 test("GET /join pre-fills a fresh made-up address on every load, never the stored freelancer's, whose session stays in the console", async () => {
   const s = sandboxState();
-  s.freelancer = { email: 'last.visitor@example.com', session_id: 's1', session_url: 'https://new.abillio.dev/s/tok', engagement_id: 'e1', engagement_status: 'active', can_be_paid: true, servicing_company_slug: 'abillio-ks' };
+  s.freelancer = { email: 'last.visitor@example.com', session_id: 's1', session_url: 'https://new.abillio.dev/s/tok', engagement_id: 'e1', engagement_status: 'active', can_be_paid: true, servicing_company_slug: 'abillio-ks', requirements: null };
   const { app } = appWith((async () => ({})) as Api, memoryState(s));
   const html = await (await app.request('/join')).text();
   const prefilled = /<input name="email" type="email" required value="([^"]*)">/.exec(html)?.[1];
@@ -312,7 +315,7 @@ test('opening the back office asks Abillio about a freelancer it cannot pay yet:
 });
 
 test('a load whose reads change nothing renders the page as stored and stores nothing: the session still says not yet, the read is refused, or a newer join replaced the session while the reads were out', async () => {
-  const ben = { email: 'ben@example.com', session_id: 's2', session_url: 'https://new.abillio.dev/s/t2', engagement_id: null, engagement_status: null, can_be_paid: false, servicing_company_slug: null };
+  const ben = { email: 'ben@example.com', session_id: 's2', session_url: 'https://new.abillio.dev/s/t2', engagement_id: null, engagement_status: null, can_be_paid: false, servicing_company_slug: null, requirements: null };
   const cases: { label: string; answer: { can_be_paid: boolean } | Error; newerJoin?: boolean; calls: string[] }[] = [
     { label: 'the session still says not yet', answer: { can_be_paid: false }, calls: [SESSION_READ, ENGAGEMENT_READ] },
     // A refused read does not take the page down with it (the trace shows it).
@@ -375,7 +378,27 @@ type Call = { method: string; path: string; body: unknown; key: string };
 // what the issue route needs.
 function joinedState(): State {
   const s = sandboxState();
-  s.freelancer = { email: 'anna@example.com', session_id: 's1', session_url: 'https://new.abillio.dev/s/t', engagement_id: 'e1', engagement_status: 'active', can_be_paid: true, servicing_company_slug: 'abillio-ks' };
+  s.freelancer = { email: 'anna@example.com', session_id: 's1', session_url: 'https://new.abillio.dev/s/t', engagement_id: 'e1', engagement_status: 'active', can_be_paid: true, servicing_company_slug: 'abillio-ks', requirements: null };
+  return s;
+}
+
+// What the engagement lists once a simulation reopened `kind` (step 2b): one
+// item due, as the requirements registry words it. Identity and the payout
+// method stop payouts, and with them invoicing; a mandate stops invoicing only.
+function reopenedList(kind: 'identity_verification' | 'payout_method' | 'mandate'): Requirements {
+  const items = {
+    identity_verification: { detail: 'expired', blocks: ['payouts', 'invoices'], due_at: '2026-10-21T09:00:00Z', resource_id: null },
+    payout_method: { detail: 'not_started', blocks: ['payouts', 'invoices'], due_at: null, resource_id: null },
+    mandate: { detail: 'revoked', blocks: ['invoices'], due_at: null, resource_id: 'e1' },
+  };
+  return { status: 'blocked', due: [{ kind, state: 'due', ...items[kind] }], upcoming: [] };
+}
+
+// joinedState() after such a simulation. Abillio can still pay a freelancer
+// whose mandate was withdrawn; not one whose identity or payout method went.
+function reopenedState(kind: 'identity_verification' | 'payout_method' | 'mandate'): State {
+  const s = joinedState();
+  s.freelancer = { ...s.freelancer!, can_be_paid: kind === 'mandate', requirements: reopenedList(kind) };
   return s;
 }
 
@@ -431,6 +454,8 @@ test('re-joining with the same e-mail keeps steps 3 and 4; a different engagemen
   initial.invoice = { id: 'inv-1', number: 'INV-1', status: 'pending', public_url: 'https://new.abillio.dev/invoice/inv-1' };
   initial.invoice_request = { engagement_id: 'e1', description: 'Tutoring, October', unit_price: '100.00', currency_code: 'EUR', issued_date: '2026-10-19', due_date: '2026-11-02' };
   initial.payout = { id: 'p1', status: 'pending' };
+  // What a simulation reopened on e1 (step 2b) goes with the engagement.
+  initial.freelancer!.requirements = reopenedList('mandate');
   const { app, state } = appWith(api, fileLikeState(initial));
   const join = (email: string) => app.request('/join', { method: 'POST', body: new URLSearchParams({ first_name: 'Anna', last_name: 'Ozola', email, tax_country: 'LV', locale: 'lv' }), headers: { 'content-type': 'application/x-www-form-urlencoded' } });
   const steps34 = () => { const s = state.load(); return { invoice: s.invoice, invoice_request: s.invoice_request, payout: s.payout }; };
@@ -440,10 +465,12 @@ test('re-joining with the same e-mail keeps steps 3 and 4; a different engagemen
   assert.equal(state.load().freelancer?.session_id, 's2', 'a new session for the same freelancer');
   assert.equal(state.load().freelancer?.engagement_id, 'e1', 'on the same engagement');
   assert.deepEqual(steps34(), before, 'steps 3 and 4 stay as they were');
+  assert.deepEqual(state.load().freelancer?.requirements, reopenedList('mandate'), 'and so does what a simulation reopened on that engagement');
   assert.equal((await join('ben@example.com')).status, 200);
   await app.request('/join/status');
   assert.equal(state.load().freelancer?.engagement_id, 'e2');
   assert.deepEqual(steps34(), { invoice: null, invoice_request: null, payout: null }, 'another engagement starts steps 3 and 4 over');
+  assert.equal(state.load().freelancer?.requirements, null, 'another freelancer starts with nothing reopened');
 });
 
 test('with nothing pending, an empty description or unit price is refused before any call', async () => {
@@ -594,7 +621,7 @@ test('a refusal forgets only the key its own call sent: a key and a request anot
 test("the issue route writes only onto the walk it acted on: an answer that comes back after another freelancer was found stores nothing on their walk, and the press goes no further", async () => {
   // While a call is out, /join/status finds another freelancer and starts steps 3 and 4 over.
   const moveOn = (s: State) => {
-    s.freelancer = { email: 'ben@example.com', session_id: 's2', session_url: 'https://new.abillio.dev/s/t2', engagement_id: 'e2', engagement_status: 'invited', can_be_paid: false, servicing_company_slug: 'abillio-ks' };
+    s.freelancer = { email: 'ben@example.com', session_id: 's2', session_url: 'https://new.abillio.dev/s/t2', engagement_id: 'e2', engagement_status: 'invited', can_be_paid: false, servicing_company_slug: 'abillio-ks', requirements: null };
     s.invoice = null; s.invoice_request = null; s.payout = null;
   };
   const cases = [
@@ -643,7 +670,7 @@ test('the pay routes fund, pay and settle, storing the payout', async () => {
   }) as Api;
   const initial = sandboxState();
   // Served by the Estonian company, not the default one: the deposit has to land on the freelancer's.
-  initial.freelancer = { email: 'anna@example.com', session_id: 's1', session_url: 'https://new.abillio.dev/s/t', engagement_id: 'e1', engagement_status: 'active', can_be_paid: true, servicing_company_slug: 'abillio-services-ou' };
+  initial.freelancer = { email: 'anna@example.com', session_id: 's1', session_url: 'https://new.abillio.dev/s/t', engagement_id: 'e1', engagement_status: 'active', can_be_paid: true, servicing_company_slug: 'abillio-services-ou', requirements: null };
   initial.invoice = { id: 'inv-1', number: 'A-1', status: 'approved', public_url: 'u' };
   const { app, state } = appWith(api, memoryState(initial));
   const fund = () => app.request('/steps/pay/fund', { method: 'POST', body: new URLSearchParams({ amount: '250.00' }), headers: { 'content-type': 'application/x-www-form-urlencoded' } });
